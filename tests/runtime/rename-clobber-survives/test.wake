@@ -1,0 +1,42 @@
+# Test for desired rename-over-directory behavior (future fix/CAS)
+#
+# Same scenario as rename-clobber, but this test expects job1's output
+# to SURVIVE the rename. With CAS + per-job staging, jobs won't write
+# directly to overlapping paths, so this won't be an issue.
+#
+# This test fails with current code, would pass after fix.
+
+# Job 1: Create a file in target/release/ (like cargo building rsc)
+def job1CreateBinary Unit =
+    makeExecPlan ("sh", "-c", "mkdir -p target/release && echo 'binary_a' > target/release/binary_a", Nil) Nil
+    | setPlanLabel "rename-clobber-survives: job1 creates binary_a"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutputs
+
+# Job 2: Simulate cargo's temp-dir-rename pattern (like cargo building rsc_tool)
+# NO dependency on job1 - doesn't declare job1's output as input
+def job2RenameClobber Unit =
+    makeExecPlan ("sh", "-c", "mkdir -p temp_target/release && echo 'binary_b' > temp_target/release/binary_b && mv temp_target target", Nil) Nil
+    | setPlanLabel "rename-clobber-survives: job2 renames temp to target"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutputs
+
+# Downstream job: uses job1's output - should succeed if file survives
+def readJob1Output _ =
+    require Pass job1Outputs = job1CreateBinary Unit
+    require Pass job2Outputs = job2RenameClobber Unit
+
+    require Some (Pair binaryA _) = find (matches `target/release/binary_a` _.getPathName) job1Outputs
+    else failWithError "job1 didn't produce target/release/binary_a"
+
+    makeExecPlan ("cat", binaryA.getPathName, Nil) (binaryA, job2Outputs)
+    | setPlanLabel "rename-clobber-survives: read job1 output"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobStdout
+
+# Entry point - runs the scenario
+export def runScenario _ = readJob1Output Unit
+
