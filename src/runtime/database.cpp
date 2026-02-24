@@ -93,6 +93,7 @@ struct Database::detail {
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
   sqlite3_stmt *insert_run_job;
+  sqlite3_stmt *check_run_job;
   sqlite3_stmt *delete_run_job;
   sqlite3_stmt *check_job_exists;
   sqlite3_stmt *get_gc_watermark;
@@ -142,6 +143,7 @@ struct Database::detail {
         set_runner_status(0),
         get_runner_status(0),
         insert_run_job(0),
+        check_run_job(0),
         delete_run_job(0),
         check_job_exists(0),
         get_gc_watermark(0),
@@ -492,6 +494,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_set_runner_status = "update jobs set runner_status=? where job_id=?";
   const char *sql_get_runner_status = "select runner_status from jobs where job_id=?";
   const char *sql_insert_run_job = "insert or ignore into run_jobs(run_id, job_id) values(?, ?)";
+  const char *sql_check_run_job = "select 1 from run_jobs where run_id=? and job_id=?";
   const char *sql_delete_run_job = "delete from run_jobs where run_id=? and job_id=?";
   const char *sql_check_job_exists = "select 1 from jobs where job_id=?";
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
@@ -549,6 +552,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
   PREPARE(sql_insert_run_job, insert_run_job);
+  PREPARE(sql_check_run_job, check_run_job);
   PREPARE(sql_delete_run_job, delete_run_job);
   PREPARE(sql_check_job_exists, check_job_exists);
   PREPARE(sql_get_gc_watermark, get_gc_watermark);
@@ -615,6 +619,7 @@ void Database::close() {
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
   FINALIZE(insert_run_job);
+  FINALIZE(check_run_job);
   FINALIZE(delete_run_job);
   FINALIZE(check_job_exists);
   FINALIZE(get_gc_watermark);
@@ -1001,6 +1006,27 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     return out;
   }
 
+  // Check if we've already validated this job in this run.
+  bind_integer(why, imp->check_run_job, 1, imp->run_id);
+  bind_integer(why, imp->check_run_job, 2, job);
+  bool already_validated = sqlite3_step(imp->check_run_job) == SQLITE_ROW;
+  finish_stmt(why, imp->check_run_job, imp->debugdb);
+
+  if (already_validated) {
+    // Fast path: already validated this run - just populate files list from DB.
+    // This is purely read-only, no write lock needed.
+    bind_integer(why, imp->get_tree, 1, job);
+    bind_integer(why, imp->get_tree, 2, OUTPUT);
+    while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
+      files.emplace_back(rip_column(imp->get_tree, 0), rip_column(imp->get_tree, 1));
+    }
+    finish_stmt(why, imp->get_tree, imp->debugdb);
+
+    end_txn();
+    return out;
+  }
+
+  // First time seeing this job in this run - need full I/O validation.
   // Gather file lists from DB while we still have the RO transaction.
   std::vector<std::string> input_paths;
   bind_integer(why, imp->get_tree, 1, job);
