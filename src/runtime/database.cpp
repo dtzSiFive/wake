@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <sqlite3.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -39,6 +40,7 @@
 
 #include "schema.h"
 #include "status.h"
+#include "util/mkdir_parents.h"
 #include "wcl/iterator.h"
 
 #define VISIBLE 0
@@ -98,9 +100,11 @@ struct Database::detail {
   sqlite3_stmt *check_job_exists;
   sqlite3_stmt *get_gc_watermark;
   sqlite3_stmt *set_run_end_time;
+  sqlite3_stmt *get_incomplete_runs;
 
   long run_id;
   long gc_watermark;
+  int run_lock_fd;  // File descriptor for our run's lock file (-1 if not held)
   detail(bool debugdb_)
       : debugdb(debugdb_),
         db(0),
@@ -148,8 +152,10 @@ struct Database::detail {
         check_job_exists(0),
         get_gc_watermark(0),
         set_run_end_time(0),
+        get_incomplete_runs(0),
         run_id(0),
-        gc_watermark(0) {}
+        gc_watermark(0),
+        run_lock_fd(-1) {}
 };
 
 class WaitingIndicator {
@@ -499,6 +505,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_check_job_exists = "select 1 from jobs where job_id=?";
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
+  // Get all runs with NULL end_time (potentially incomplete/dead runs)
+  const char *sql_get_incomplete_runs = "select run_id from runs where end_time is null";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -557,6 +565,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_check_job_exists, check_job_exists);
   PREPARE(sql_get_gc_watermark, get_gc_watermark);
   PREPARE(sql_set_run_end_time, set_run_end_time);
+  PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
 
   return "";
 }
@@ -624,6 +633,14 @@ void Database::close() {
   FINALIZE(check_job_exists);
   FINALIZE(get_gc_watermark);
   FINALIZE(set_run_end_time);
+  FINALIZE(get_incomplete_runs);
+
+  // Close run lock file if held
+  if (imp->run_lock_fd >= 0) {
+    ::close(imp->run_lock_fd);
+    imp->run_lock_fd = -1;
+  }
+
   close_db(this);
   release_build_lock();
 }
@@ -845,6 +862,31 @@ void Database::entropy(uint64_t *key, int words) {
   end_txn();
 }
 
+static std::string run_lock_path(long run_id) {
+  return ".wake/locks/run_" + std::to_string(run_id) + ".lock";
+}
+
+// Returns true if lock acquired, false otherwise (sets errno).
+static bool acquire_lock(int fd, bool wait) {
+  struct flock fl;
+  memset(&fl, 0, sizeof(fl));
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 0;  // 0 = entire file
+  return fcntl(fd, wait ? F_SETLKW : F_SETLK, &fl) == 0;
+}
+
+static void release_lock(int fd) {
+  struct flock fl;
+  memset(&fl, 0, sizeof(fl));
+  fl.l_type = F_UNLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 0;
+  fcntl(fd, F_SETLK, &fl);
+}
+
 void Database::prepare(const std::string &cmdline) {
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
@@ -857,11 +899,75 @@ void Database::prepare(const std::string &cmdline) {
   single_step(why, imp->add_run, imp->debugdb);
   imp->run_id = sqlite3_last_insert_rowid(imp->db);
 
+  // Create lock directory if needed
+  mkdir_with_parents(".wake/locks", 0755);
+
+  // Acquire lock before committing, so we never appear incomplete without one.
+  std::string our_lock_path = run_lock_path(imp->run_id);
+  imp->run_lock_fd = ::open(our_lock_path.c_str(), O_CREAT | O_RDWR, 0644);
+  if (imp->run_lock_fd < 0) {
+    std::cerr << "error: failed to create run lock '" << our_lock_path << "': " << strerror(errno)
+              << std::endl;
+    exit(1);
+  }
+  if (!acquire_lock(imp->run_lock_fd, true)) {
+    std::cerr << "error: failed to acquire run lock: " << strerror(errno) << std::endl;
+    exit(1);
+  }
+  end_txn();
+
+  // Query incomplete runs (separate txn - snapshot doesn't need to match above).
+  why = "Could not query incomplete runs";
+  std::vector<long> incomplete_runs;
+  begin_ro_txn();
+  while (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    long run_id = sqlite3_column_int64(imp->get_incomplete_runs, 0);
+    if (run_id != imp->run_id) {
+      incomplete_runs.push_back(run_id);
+    }
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+  end_txn();
+
+  // Probe locks outside any transaction to avoid blocking DB during I/O.
+  // If we can acquire a run's lock, that process is dead.
+  std::vector<long> dead_runs;
+  for (auto incomplete_run : incomplete_runs) {
+    std::string lock_path = run_lock_path(incomplete_run);
+    int fd = ::open(lock_path.c_str(), O_RDWR);
+    if (fd < 0) {
+      std::cerr << "warning: failed to open run lock " << incomplete_run << ": " << strerror(errno)
+                << std::endl;
+      continue;
+    }
+
+    if (acquire_lock(fd, false)) {
+      dead_runs.push_back(incomplete_run);
+      unlink(lock_path.c_str());  // Remove while locked to prevent dup reaping
+      release_lock(fd);
+    } else if (errno != EAGAIN && errno != EACCES) {
+      std::cerr << "warning: failed to probe run lock " << incomplete_run << ": " << strerror(errno)
+                << std::endl;
+    }
+    ::close(fd);
+  }
+
+  // Mark dead runs as reaped (end_time = -1).
+  begin_rw_txn();
+  why = "Could not reap dead run";
+  for (long dead_run : dead_runs) {
+    bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
+    bind_integer(why, imp->set_run_end_time, 2, dead_run);
+    single_step(why, imp->set_run_end_time, imp->debugdb);
+  }
+  end_txn();
+
+  begin_ro_txn();
   why = "Could not compute GC watermark";
   if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
     imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
   } else {
-    // shouldn't happen: we just inserted a run with end_time = NULL
+    std::cerr << "warning: unable to compute GC watermark" << std::endl;
     imp->gc_watermark = 0;
   }
   finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
@@ -898,6 +1004,11 @@ void Database::clean() {
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
 
   end_txn();
+
+  // Remove our own lock file - we're done with this run
+  if (imp->run_lock_fd >= 0) {
+    unlink(run_lock_path(imp->run_id).c_str());
+  }
 
   // Add checkpoint after cleanup operations
   checkpoint(false);  // Non-blocking checkpoint for sync point
