@@ -93,6 +93,8 @@ struct Database::detail {
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
   sqlite3_stmt *insert_run_job;
+  sqlite3_stmt *delete_run_job;
+  sqlite3_stmt *check_job_exists;
   sqlite3_stmt *get_gc_watermark;
   sqlite3_stmt *set_run_end_time;
 
@@ -140,6 +142,8 @@ struct Database::detail {
         set_runner_status(0),
         get_runner_status(0),
         insert_run_job(0),
+        delete_run_job(0),
+        check_job_exists(0),
         get_gc_watermark(0),
         set_run_end_time(0),
         run_id(0),
@@ -488,6 +492,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_set_runner_status = "update jobs set runner_status=? where job_id=?";
   const char *sql_get_runner_status = "select runner_status from jobs where job_id=?";
   const char *sql_insert_run_job = "insert or ignore into run_jobs(run_id, job_id) values(?, ?)";
+  const char *sql_delete_run_job = "delete from run_jobs where run_id=? and job_id=?";
+  const char *sql_check_job_exists = "select 1 from jobs where job_id=?";
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
 
@@ -543,6 +549,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
   PREPARE(sql_insert_run_job, insert_run_job);
+  PREPARE(sql_delete_run_job, delete_run_job);
+  PREPARE(sql_check_job_exists, check_job_exists);
   PREPARE(sql_get_gc_watermark, get_gc_watermark);
   PREPARE(sql_set_run_end_time, set_run_end_time);
 
@@ -607,6 +615,8 @@ void Database::close() {
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
   FINALIZE(insert_run_job);
+  FINALIZE(delete_run_job);
+  FINALIZE(check_job_exists);
   FINALIZE(get_gc_watermark);
   FINALIZE(set_run_end_time);
   close_db(this);
@@ -919,17 +929,41 @@ void Database::end_txn() const {
   single_step("Could not commit a transaction", imp->commit_txn, imp->debugdb);
 }
 
-// This function needs to be able to run twice in succession and return the same results
-// ... because heap allocations are created to hold the file list output by this function.
+// Attempt to reuse a previously-run job from the database.
+//
+// This is a single logical operation from the caller's perspective, but internally
+// uses multiple database transactions to avoid holding write locks during filesystem
+// I/O. Starting with a RO transaction also avoids write lock contention when just
+// querying - we only escalate to RW if we actually need to claim the job.
+//
+// The multi-transaction structure is:
+//
+//   Phase 1a (RO): Lookup job, check if already validated this run
+//   Phase 1b (RW): Re-verify job exists, claim it (INSERT run_jobs)
+//   Phase 2 (no txn): Validate inputs visible, outputs exist (faccessat)
+//   Phase 3 (RW, on failure only): Release claim (DELETE run_jobs)
+//
+// Phase 2 TOCTOU concern diminishes with CAS if we query the store directly
+// rather than faccessat on output paths - store tampering is adversarial.
+//
+// This is safe because any side effects (the run_jobs INSERT) are cleaned up on
+// failure, and the operation is idempotent - it can be called multiple times for
+// the same job and will return consistent results.
+//
+// Idempotency is required because wake's heap GC may re-run prim_job_cache to
+// rebuild heap allocations. The run_jobs table tracks jobs already validated in
+// this run, allowing us to skip I/O validation on re-execution (the "fast path").
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
                           long &job, std::vector<FileReflection> &files, double *pathtime) {
   Usage out;
   long stat_id;
-
   const char *why = "Could not check for a cached job";
-  begin_rw_txn();
+
+  // Phase 1a: RO transaction - fast path for already-validated jobs.
+  // This is the common case on repeated calls (wake's GC may re-run this primitive).
+  begin_ro_txn();
   bind_string(why, imp->find_prior, 1, directory);
   bind_blob(why, imp->find_prior, 2, commandline);
   bind_blob(why, imp->find_prior, 3, environment);
@@ -967,6 +1001,48 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     return out;
   }
 
+  // Gather file lists from DB while we still have the RO transaction.
+  std::vector<std::string> input_paths;
+  bind_integer(why, imp->get_tree, 1, job);
+  bind_integer(why, imp->get_tree, 2, INPUT);
+  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
+    input_paths.push_back(rip_column(imp->get_tree, 0));
+  }
+  finish_stmt(why, imp->get_tree, imp->debugdb);
+
+  bind_integer(why, imp->get_tree, 1, job);
+  bind_integer(why, imp->get_tree, 2, OUTPUT);
+  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
+    files.emplace_back(rip_column(imp->get_tree, 0), rip_column(imp->get_tree, 1));
+  }
+  finish_stmt(why, imp->get_tree, imp->debugdb);
+
+  end_txn();  // End RO transaction
+
+  // Phase 1b: RW transaction to claim the job (protect from GC).
+  // Must re-verify job exists since it could have been GC'd between 1a and 1b.
+  begin_rw_txn();
+  bind_integer(why, imp->check_job_exists, 1, job);
+  if (sqlite3_step(imp->check_job_exists) != SQLITE_ROW) {
+    // Job was reaped between Phase 1a and 1b - nothing to reuse
+    finish_stmt(why, imp->check_job_exists, imp->debugdb);
+    end_txn();
+    out.found = false;
+    return out;
+  }
+  finish_stmt(why, imp->check_job_exists, imp->debugdb);
+
+  // Job still exists and we hold RW lock - claim it
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
+  end_txn();
+
+  // Phase 2: I/O validation outside of any transaction.
+  // The job is now protected by run_jobs entry. If validation fails, we'll
+  // remove the entry in Phase 3 to allow future GC.
+  // TOCTOU is inherent to faccessat regardless of transaction.
+
   // Create a hash table of visible files
   std::unordered_set<std::string> vis;
   const char *tok = visible.c_str();
@@ -979,37 +1055,36 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
 
   // Confirm all inputs are still visible
-  bind_integer(why, imp->get_tree, 1, job);
-  bind_integer(why, imp->get_tree, 2, INPUT);
-  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
-    if (vis.find(rip_column(imp->get_tree, 0)) == vis.end()) out.found = false;
+  for (const auto &path : input_paths) {
+    if (vis.find(path) == vis.end()) {
+      out.found = false;
+      break;
+    }
   }
-  finish_stmt(why, imp->get_tree, imp->debugdb);
 
-  // Confirm all outputs still exist, and report their old hashes
-  bind_integer(why, imp->get_tree, 1, job);
-  bind_integer(why, imp->get_tree, 2, OUTPUT);
-  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
-    std::string path = rip_column(imp->get_tree, 0);
-    if (faccessat(AT_FDCWD, path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) out.found = false;
-    files.emplace_back(std::move(path), rip_column(imp->get_tree, 1));
+  // Confirm all outputs still exist
+  if (out.found) {
+    for (const auto &file : files) {
+      if (faccessat(AT_FDCWD, file.path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) {
+        out.found = false;
+        break;
+      }
+    }
   }
-  finish_stmt(why, imp->get_tree, imp->debugdb);
 
-  // If validation failed, wipe the files-to-check list
+  // Phase 3: Handle validation result
   if (!out.found) {
+    // Validation failed - remove the run_jobs entry we added in Phase 1b.
+    // This allows the job to be GC'd if no other run references it.
     files.clear();
+    begin_rw_txn();
+    bind_integer(why, imp->delete_run_job, 1, imp->run_id);
+    bind_integer(why, imp->delete_run_job, 2, job);
+    single_step(why, imp->delete_run_job, imp->debugdb);
     end_txn();
-    return out;
   }
 
-  // Validation passed - record this job as part of the current run
-  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
-  bind_integer(why, imp->insert_run_job, 2, job);
-  single_step(why, imp->insert_run_job, imp->debugdb);
-
-  end_txn();
-
+  // Success: run_jobs entry was already inserted in Phase 1b, nothing more to do.
   return out;
 }
 
