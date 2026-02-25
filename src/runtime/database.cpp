@@ -506,7 +506,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
   // Get all runs with NULL end_time (potentially incomplete/dead runs)
-  const char *sql_get_incomplete_runs = "select run_id from runs where end_time is null";
+  const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -912,18 +912,20 @@ void Database::prepare(const std::string &cmdline) {
   }
   if (!acquire_lock(imp->run_lock_fd, true)) {
     std::cerr << "error: failed to acquire run lock: " << strerror(errno) << std::endl;
+    unlink(our_lock_path.c_str());
     exit(1);
   }
   end_txn();
 
   // Query incomplete runs (separate txn - snapshot doesn't need to match above).
   why = "Could not query incomplete runs";
-  std::vector<long> incomplete_runs;
+  std::vector<std::pair<long, int64_t>> incomplete_runs;  // (run_id, start_time)
   begin_ro_txn();
   while (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
     long run_id = sqlite3_column_int64(imp->get_incomplete_runs, 0);
+    int64_t start_time = sqlite3_column_int64(imp->get_incomplete_runs, 1);
     if (run_id != imp->run_id) {
-      incomplete_runs.push_back(run_id);
+      incomplete_runs.emplace_back(run_id, start_time);
     }
   }
   finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
@@ -931,22 +933,30 @@ void Database::prepare(const std::string &cmdline) {
 
   // Probe locks outside any transaction to avoid blocking DB during I/O.
   // If we can acquire a run's lock, that process is dead.
+  const int64_t dead_threshold_ns = 24LL * 60 * 60 * 1000000000LL;  // 24h
   std::vector<long> dead_runs;
-  for (auto incomplete_run : incomplete_runs) {
-    std::string lock_path = run_lock_path(incomplete_run);
+  for (const auto &[run_id, start_time] : incomplete_runs) {
+    std::string lock_path = run_lock_path(run_id);
     int fd = ::open(lock_path.c_str(), O_RDWR);
     if (fd < 0) {
-      std::cerr << "warning: failed to open run lock " << incomplete_run << ": " << strerror(errno)
-                << std::endl;
+      if (errno == ENOENT) {
+        // No lock file - only reap if old enough to rule out races.
+        if (ts - start_time > dead_threshold_ns) {
+          dead_runs.push_back(run_id);
+        }
+      } else {
+        std::cerr << "warning: failed to open run lock " << run_id << ": " << strerror(errno)
+                  << std::endl;
+      }
       continue;
     }
 
     if (acquire_lock(fd, false)) {
-      dead_runs.push_back(incomplete_run);
+      dead_runs.push_back(run_id);
       unlink(lock_path.c_str());  // Remove while locked to prevent dup reaping
       release_lock(fd);
     } else if (errno != EAGAIN && errno != EACCES) {
-      std::cerr << "warning: failed to probe run lock " << incomplete_run << ": " << strerror(errno)
+      std::cerr << "warning: failed to probe run lock " << run_id << ": " << strerror(errno)
                 << std::endl;
     }
     ::close(fd);
