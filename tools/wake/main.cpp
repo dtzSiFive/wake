@@ -167,10 +167,35 @@ void hide_internal_jobs(std::vector<std::vector<std::string>> &out) {
   out.push_back({"tags NOT LIKE '%<d>inspect.visibility=hidden<d>%'", "tags IS NULL"});
 }
 
+std::string format_duration(int64_t nanos) {
+  int64_t secs = nanos / 1000000000;
+  if (secs < 60) return std::to_string(secs) + "s";
+  int64_t mins = secs / 60;
+  secs %= 60;
+  if (mins < 60) return std::to_string(mins) + "m" + std::to_string(secs) + "s";
+  int64_t hours = mins / 60;
+  mins %= 60;
+  if (hours < 24)
+    return std::to_string(hours) + "h" + std::to_string(mins) + "m";
+  int64_t days = hours / 24;
+  hours %= 24;
+  return std::to_string(days) + "d" + std::to_string(hours) + "h";
+}
+
 void query_runs(Database &db) {
   const auto runs = db.get_runs();
-  for (const auto run : runs) {
-    std::cout << run.time.as_string() << " " << run.cmdline << std::endl;
+  for (const auto &run : runs) {
+    std::cout << run.start_time.as_string() << " → ";
+    if (!run.end_time) {
+      std::cout << "...                  [running]  ";
+    } else if (*run.end_time < 0) {
+      std::cout << "???                  [crashed]  ";
+    } else {
+      Time end(*run.end_time);
+      int64_t duration = *run.end_time - run.start_time.as_int64();
+      std::cout << end.as_string() << "  [" << format_duration(duration) << "]  ";
+    }
+    std::cout << run.cmdline << std::endl;
   }
 }
 
