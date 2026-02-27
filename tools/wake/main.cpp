@@ -1027,7 +1027,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  db.finish_run();
   db.clean();
+  db.finish_run();
   return pass ? 0 : 1;
 }
