@@ -171,9 +171,19 @@ def writeRunner (content: String) =
         # Wait for the virtual job to complete
         match writeTask
             Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
-            Pass path ->
-                def cleanable = (path, Nil)
-                def fileOutputs = fnOutputs cleanable
+            Pass writtenPath ->
+                def cleanable = (writtenPath, Nil)
+                def filteredPaths = fnOutputs cleanable
+
+                # Store written file in CAS and create Path with hash
+                def toPath p =
+                    match (casStoreAndMakePath p)
+                        Pass pathObj -> Some pathObj
+                        Fail _ -> None
+
+                def fileOutputs: List Path =
+                    filteredPaths
+                    | mapPartial toPath
 
                 RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
@@ -260,7 +270,7 @@ export def installAs (dest: String) (file: Path): Result Path Error =
     | setPlanLabel "installAs: {dest} {file.getPathName}"
     | setPlanEnvironment Nil
     | setPlanFnOutputs foutputs
-    | runJobWith localRunner
+    | runJobWith defaultRunner
     | getJobOutput
 
 # Copy a file from one directory subtree to another
@@ -290,6 +300,9 @@ export def installIn (toRoot: String) (fromRoot: String) (sourcePath: Path): Res
 def mkdirRunner: Runner =
     def primMkdir (mode: Integer) (path: String): Result String String =
         (\_ \_ prim "mkdir") mode path
+
+    # Directories have no content, so we use a special "dir hash" (all zeros)
+    def dirHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
     def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<mkdir>", "-m", "{string mode}", "{string path}", Nil)
@@ -324,9 +337,15 @@ def mkdirRunner: Runner =
         # Wait for the virtual job to complete
         match mkdirTask
             Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
-            Pass path ->
-                def cleanable = (path, Nil)
-                def fileOutputs = fnOutputs cleanable
+            Pass createdPath ->
+                def cleanable = (createdPath, Nil)
+                def filteredPaths = fnOutputs cleanable
+
+                # Directories use a special empty hash since they have no content
+                def makeDirPath p = Path p dirHash
+                def fileOutputs: List Path =
+                    filteredPaths
+                    | map makeDirPath
 
                 RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 

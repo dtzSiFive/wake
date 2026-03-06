@@ -1,0 +1,134 @@
+# Test that runner outputs have correct hashes
+
+# Test file outputs have real hashes (not all zeros)
+export def testFileHash Unit =
+    require Pass out =
+        makeExecPlan ("sh", "-c", "echo hello > out.txt", Nil) Nil
+        | setPlanLabel "test: file hash"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash = getPathHash out
+    def zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+    require True = hash !=* zeros
+    else failWithError "File output should have real hash, got all zeros"
+
+    require True = hash !=* "BadHash"
+    else failWithError "File output should not have BadHash"
+
+    Pass 0
+
+# Test symlink outputs have real hashes (hash of target)
+export def testSymlinkHash Unit =
+    require Pass out =
+        makeExecPlan ("ln", "-sf", "target", "link.txt", Nil) Nil
+        | setPlanLabel "test: symlink hash"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash = getPathHash out
+    def zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+    require True = hash !=* zeros
+    else failWithError "Symlink output should have hash of target, got all zeros"
+
+    require True = hash !=* "BadHash"
+    else failWithError "Symlink output should not have BadHash"
+
+    Pass 0
+
+# Test directory outputs have empty hash (all zeros)
+export def testDirHash Unit =
+    require Pass out =
+        mkdir "testdir"
+
+    def hash = getPathHash out
+    def zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+    require True = hash ==* zeros
+    else failWithError "Directory output should have all-zeros hash, got {hash}"
+
+    Pass 0
+
+# Test that same content produces same hash
+export def testSameContentSameHash Unit =
+    require Pass out1 =
+        makeExecPlan ("sh", "-c", "echo same > file1.txt", Nil) Nil
+        | setPlanLabel "test: same content 1"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    require Pass out2 =
+        makeExecPlan ("sh", "-c", "echo same > file2.txt", Nil) Nil
+        | setPlanLabel "test: same content 2"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash1 = getPathHash out1
+    def hash2 = getPathHash out2
+
+    require True = hash1 ==* hash2
+    else failWithError "Same content should have same hash: {hash1} vs {hash2}"
+
+    Pass 0
+
+# Test that different content produces different hash
+export def testDiffContentDiffHash Unit =
+    require Pass out1 =
+        makeExecPlan ("sh", "-c", "echo aaa > diff1.txt", Nil) Nil
+        | setPlanLabel "test: diff content 1"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    require Pass out2 =
+        makeExecPlan ("sh", "-c", "echo bbb > diff2.txt", Nil) Nil
+        | setPlanLabel "test: diff content 2"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash1 = getPathHash out1
+    def hash2 = getPathHash out2
+
+    require True = hash1 !=* hash2
+    else failWithError "Different content should have different hash"
+
+    Pass 0
+
+# Test writeRunner produces correct hash
+export def testWriteHash Unit =
+    require Pass out =
+        write "written.txt" "test content"
+
+    def hash = getPathHash out
+    def zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+    require True = hash !=* zeros
+    else failWithError "Written file should have real hash, got all zeros"
+
+    Pass 0
+
+# Test hash persists across runs (reuse)
+export def testHashReuse Unit =
+    require Pass out =
+        makeExecPlan ("sh", "-c", "echo reuse > reuse.txt", Nil) Nil
+        | setPlanLabel "test: hash reuse"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash = getPathHash out
+
+    # Run again - should reuse and have same hash
+    require Pass out2 =
+        makeExecPlan ("sh", "-c", "echo reuse > reuse.txt", Nil) Nil
+        | setPlanLabel "test: hash reuse"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash2 = getPathHash out2
+
+    require True = hash ==* hash2
+    else failWithError "Hash should be same on reuse: {hash} vs {hash2}"
+
+    Pass 0
+

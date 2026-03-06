@@ -37,3 +37,61 @@ export def casIngestStagingFile (destPath: String) (itemType: String) (stagingPa
 
     raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec
     | rmapError makeError
+
+# Store a file in CAS and return its content hash.
+# The file is copied/reflinked to the CAS blob store.
+# Returns the hash that can be used to retrieve the content later.
+export def casStoreFile (path: String): Result String Error =
+    def raw path = prim "cas_store_file"
+
+    raw path
+    | rmapError makeError
+
+# Check if a blob with the given hash exists in CAS.
+export def casHasBlob (hash: String): Boolean =
+    (\h prim "cas_has_blob") hash
+
+# Store a path in CAS (if applicable) and return its content hash.
+# Handles all file types:
+# - Regular files: stored in CAS blob store, returns content hash
+# - Symlinks: NOT stored in CAS, returns hash of symlink target
+# - Directories: NOT stored in CAS, returns all-zeros hash
+export def casStorePath (path: String): Result String Error =
+    def raw path = prim "cas_store_path"
+
+    raw path
+    | rmapError makeError
+
+# Store a path in CAS and return a Path with the content hash.
+# This is the primary way for runners to convert output paths to Path objects.
+# Handles files, symlinks, and directories appropriately.
+export def casStoreAndMakePath (path: String): Result Path Error =
+    require Pass hash = casStorePath path
+
+    Pass (Path path hash)
+
+# Store a temp file in CAS, verify hash matches expected, materialize to destination, return Path.
+# Used by remote cache to download blobs: download to temp, store in CAS, verify, materialize.
+# - tempPath: path to the downloaded temp file
+# - destPath: final destination path in workspace
+# - expectedHash: hash claimed by remote cache (for verification)
+# - mode: file mode to set on destination
+# Returns: Path with verified hash, or error if hash mismatch or CAS operation fails
+export def casStoreAndMaterialize (tempPath: String) (destPath: String) (expectedHash: String) (mode: Integer): Result Path Error =
+    # Store temp file in CAS - computes actual hash
+    require Pass actualHash = casStoreFile tempPath
+
+    # Verify hash matches what was claimed
+    require True = actualHash ==* expectedHash
+    else failWithError "Hash mismatch: expected {expectedHash} but got {actualHash}"
+
+    # Materialize from CAS to final path (mtime 0 = current time)
+    require Pass _ = casMaterializeItem destPath "file" actualHash mode 0 0
+
+    Pass (Path destPath actualHash)
+
+# Create a Path for items that don't have content to hash (symlinks, directories).
+# These use a placeholder hash (all zeros) since there's no file content.
+# This is the only way for external packages to create Path objects for non-file items.
+export def makePlaceholderPath (hash: String) (path: String): Path =
+    Path path hash

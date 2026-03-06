@@ -677,56 +677,20 @@ export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheS
 # ```
 #  rscApiGetFileBlob (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass "foo/bar"
 # ```
-export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
-    def resolveDbSchemeToFile scheme path =
-        resolveDbScheme scheme path
-        |> writeTempFile "rsc.output_file.blob.{blobId}"
+export def rscApiGetFileBlob ((CacheSearchBlob _blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result Path Error =
+    def resolveDbSchemeToFile scheme dbPath =
+        resolveDbScheme scheme dbPath
+        |> writeTempFile "rsc.output_file.blob"
 
-    def resolveBlobFileScheme scheme path =
-        buildHttpRequest "{scheme}://{path}"
+    def resolveBlobFileScheme scheme httpPath =
+        buildHttpRequest "{scheme}://{httpPath}"
         | setMethod HttpMethodGet
         | makeBinaryRequest
 
     require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
 
-    # Verify content hash if provided
-    require Pass actualHash = rscHashFile blobPath.getPathName
-    require Pass _ = verifyBlobHash blobId actualHash contentHash
-
-    def fixupScript =
-        """
-        # 1. No failures are acceptable
-        set -e
-        # 2. Remove the old rsctmp file if it exists
-        rm -f '%{path}.rsctmp'
-        # 3. Hardlink the file to not use 2x disk space
-        cp -l %{blobPath.getPathName} '%{path}.rsctmp'
-        # 4. Set the permissions as specified
-        chmod %{mode | strOctal} '%{path}.rsctmp'
-        # 5. If the file was previously created with the exact inode by the rsc but not cleaned up
-        #    then it needs to be removed so we can complete the atomic mv
-        [ '%{path}.rsctmp' -ef '%{path}' ] && rm '%{path}'
-        # 6. Atomically move so interruptions don't effect the build.
-        mv '%{path}.rsctmp' '%{path}'
-        """
-
-    def job =
-        makeShellPlan fixupScript (blobPath, Nil)
-        | setPlanLabel "rsc: fixup blob {path} from {blobPath.getPathName}"
-        | setPlanPersistence Once
-        # We need to copy the file over another jobs output space so:
-        #   - We must run with the localRunner
-        #   - We must lie and say we output nothing
-        #   - The *path* must be listed as another jobs output to be available to the system
-        | setPlanFnOutputs (\_ Nil)
-        | setPlanEcho logDebug
-        | runJobWith localRunner
-        | setJobInspectVisibilityHidden
-
-    require True = job.isJobOk
-    else failWithError "Failed to cleanup downloaded file {path} from {blobPath.getPathName}"
-
-    Pass path
+    # Store in CAS, verify hash, materialize to destination - returns Path with verified hash
+    casStoreAndMaterialize blobPath.getPathName path contentHash mode
 
 # The temporary sentinel file used to disable the cache
 export def disableCacheFilePath: String =

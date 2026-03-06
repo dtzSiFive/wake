@@ -174,7 +174,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
             Pass Unit
 
-        def outputFilesDownload =
+        # Download files - each download stores in CAS and returns Path with verified hash
+        def outputFilesDownload: List (Result Path Error) =
             outputFiles
             | map doDownload
 
@@ -182,14 +183,6 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         def outputSymlinksDownload =
             outputSymlinks
             | map doMakeSymlink
-
-        def resolvedOutputs =
-            outputFiles
-            | map getCacheSearchOutputFilePath
-
-        def resolvedSymlinks =
-            outputSymlinks
-            | map getCacheSearchOutputSymlinkLink
 
         def Pair hiddenDirectories publishedDirectories =
             outputDirs
@@ -199,11 +192,9 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             hiddenDirectories
             | map getCacheSearchOutputDirectoryPath
 
-        def resolvedDirectories =
-            publishedDirectories
-            | map getCacheSearchOutputDirectoryPath
+        # Symlinks and directories get paths with empty hash (no content to hash)
+        def emptyHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
-        def outputs = resolvedOutputs ++ resolvedDirectories ++ resolvedSymlinks
         def predict = Usage status runtime cputime mem ibytes obytes
         def inputs = map getPathName (input.getRunnerInputVisible)
 
@@ -215,9 +206,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             stderrDownload
             | addErrorContext "rsc: Failed to download stderr for '{label}'"
 
-        # We don't actually care about the result here but we need to ensure that all
-        # downloads have completed before returning.
-        require Pass _ =
+        # Collect downloaded file Paths (with verified hashes from CAS)
+        require Pass resolvedOutputs =
             outputFilesDownload
             | findFail
             | addErrorContext "rsc: Failed to download a blob"
@@ -226,6 +216,18 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             outputSymlinksDownload
             | findFail
             | addErrorContext "rsc: Failed to create a symlink"
+
+        # Symlinks: path is the link location, hash is empty
+        def resolvedSymlinks: List Path =
+            outputSymlinks
+            | map (getCacheSearchOutputSymlinkLink _ | makePlaceholderPath emptyHash)
+
+        # Directories: path is the dir, hash is empty
+        def resolvedDirectories: List Path =
+            publishedDirectories
+            | map (getCacheSearchOutputDirectoryPath _ | makePlaceholderPath emptyHash)
+
+        def outputs: List Path = resolvedOutputs ++ resolvedDirectories ++ resolvedSymlinks
 
         def _ = primJobVirtual job stdout stderr predict
 
@@ -368,7 +370,9 @@ def thirdBy (acceptFn: a => ThirdByGroup): (list: List a) => Triple (one: List a
 
 # Posts a completed job to the remote cache
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
-    def filteredOutputs = output.getRunnerOutputOutputs
+    # Convert List Path to List String for backward compatibility with rest of function
+    def filteredOutputPaths = output.getRunnerOutputOutputs
+    def filteredOutputs = filteredOutputPaths | map getPathName
     def cleanableOutputs = output.getRunnerOutputCleanableOutputs
     def hiddenOutputs = subtract scmp cleanableOutputs filteredOutputs
 
@@ -477,8 +481,9 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
             | intersect scmp created
 
         # symlinkTargetsCreated must be a subset of the list of published outputs otherwise the job
-        # is breaking the contract.
-        subset scmp symlinkTargetsCreated output.getRunnerOutputOutputs
+        # is breaking the contract. Convert List Path to List String for comparison.
+        def outputPaths = output.getRunnerOutputOutputs | map getPathName
+        subset scmp symlinkTargetsCreated outputPaths
     else panic "Job may not create both a symlink and file, then output only the symlink"
 
     require Pass stdoutId = stdoutUpload

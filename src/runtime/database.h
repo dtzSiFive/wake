@@ -73,7 +73,6 @@ struct RunReflection {
 
 struct JobReflection {
   long job;
-  bool stale;
   std::string label;
   std::string directory;
   std::vector<std::string> commandline;
@@ -125,7 +124,7 @@ struct Database {
 
   void prepare(const std::string &cmdline);  // prepare for job execution
   void finish_run();                         // mark run as complete (sets end_time)
-  void clean();                              // finished execution; sweep stale jobs
+  void clean();                              // finished execution; clean up old jobs via GC
 
   // Reap dead runs: probe lock files and mark crashed runs as reaped.
   // Automatically excludes our own run_id if prepare() was called.
@@ -183,10 +182,6 @@ struct Database {
   // The check, DB clear, and file deletion (via callback) all happen
   // within the same transaction to prevent races with new builds.
   bool clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files);
-
-  void add_hash(const std::string &file, const std::string &hash, long modified);
-
-  std::string get_hash(const std::string &file, long modified);
 
   // In core_filters, the outer vec is a set of filters to be AND'd together, inner vec is a set of
   // queries to be OR'd together. This holds for input_file_filters and output_file_filters as well

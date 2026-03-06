@@ -83,8 +83,9 @@ export tuple RunnerInput =
 export tuple RunnerOutput =
     # The filtered list of files actually read by the job. It can be used for more precise reruns
     export Inputs: List String
-    # The filtered list of files output by the job. These files are hashed and elevated to Path
-    export Outputs: List String
+    # The filtered list of files output by the job, with their content hashes.
+    # Runners are responsible for computing hashes and storing outputs in CAS.
+    export Outputs: List Path
     # The list of files output by the job that should be deleted by wake --clean. May include files
     # listed in Outputs as they will be removed later. The files in the list that are not in
     # Outputs will not be hashed, published, or elevated to Path but will be deleted by wake --clean
@@ -131,18 +132,25 @@ export def localRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Caller needs to fill this in from nothing
-        def cleanable = Nil
-        def fileOutputs = fnOutputs cleanable
+        # localRunner has no sandboxing, so cleanable starts empty
+        # fnOutputs specifies expected outputs which we then hash
+        def cleanable: List String = Nil
+        def outputPaths = fnOutputs cleanable
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
-            # Set the runner status to be a success (`None`) - it's the callers responsibility
-            # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
-        # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        # Hash outputs after job completes and store in CAS
+        # This converts List String -> List Path with hashes
+        def computeOutputs _ =
+            outputPaths
+            | map casStoreAndMakePath
+            | findFail
+            | getPass
+            | getOrElse Nil
+
+        def return _ = RunnerOutput fileInputs (computeOutputs Unit) cleanable usage runnerError
 
         waitJobMerged return job
 
@@ -160,18 +168,24 @@ export def virtualRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Caller needs to fill this in from nothing
-        def cleanable = Nil
-        def fileOutputs = fnOutputs cleanable
+        # virtualRunner has no process, so cleanable starts empty
+        # fnOutputs specifies expected outputs which we then hash
+        def cleanable: List String = Nil
+        def outputPaths = fnOutputs cleanable
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
-            # Set the runner status to be a success (`None`) - it's the callers responsibility
-            # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
-        # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        # Hash outputs after job completes and store in CAS
+        def computeOutputs _ =
+            outputPaths
+            | map casStoreAndMakePath
+            | findFail
+            | getPass
+            | getOrElse Nil
+
+        def return _ = RunnerOutput fileInputs (computeOutputs Unit) cleanable usage runnerError
 
         waitJobMerged return job
 
@@ -383,32 +397,48 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             else if itemType ==* "directory" then processStagingDirectory destPath itemInfo
             else failWithError "Unknown staging item type '{itemType}' for {destPath}"
 
+        # Process staging files and collect (path, hash) pairs
+        # - Files have hash from CAS storage
+        # - Symlinks need hash computed from target (done after materialization)
+        # - Directories use empty hash
+        def extractHashFromItem (Pair destPath itemInfo): Option (Pair String String) =
+            require Some itemType = itemInfo // `type` | getJString
+            else None
+
+            if itemType ==* "file" then
+                require Some hash = itemInfo // `hash` | getJString
+                else None
+                Some (Pair destPath hash)
+            else if itemType ==* "directory" then
+                # Directories use empty hash
+                Some (Pair destPath "0000000000000000000000000000000000000000000000000000000000000000")
+            else
+                # Symlinks: we'll compute hash after materialization using casStorePath
+                None
+
+        def stagingEntries =
+            content // `staging_files`
+            | getJObject
+            | getOrElse Nil
+
+        # Build path -> hash map from staging_files (files and directories only)
+        # Symlinks are handled separately after materialization
+        def outputHashPairs: List (Pair String String) =
+            stagingEntries
+            | mapPartial extractHashFromItem
+
+        def processEntry (Pair destPath itemInfo) = processStagingItem destPath itemInfo
+
         def stagingFilesResult =
-            match (content // `staging_files` | getJObject)
-                None -> Pass Unit
-                Some entries ->
-                    def ingestEntry (Pair destPath itemInfo) = processStagingItem destPath itemInfo
-                    entries
-                    | map ingestEntry
-                    | findFail
-                    | rmap (\_ Unit)
+            stagingEntries
+            | map processEntry
+            | findFail
+            | rmap (\_ Unit)
 
         require Pass _ = stagingFilesResult
         else
             stagingFilesResult.getFail
             | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
-
-        # Extract string from either a plain string or an object with "path" field
-        # This handles both old format (strings) and new format (objects with path/hash)
-        def extractPath (jval: JValue): Option String =
-            match jval
-                JString s -> Some s
-                JObject fields ->
-                    # find returns Option (Pair (Pair String JValue) Integer)
-                    match (find (\(Pair k _) k ==* "path") fields)
-                        Some (Pair (Pair _ pathVal) _) -> getJString pathVal
-                        None -> None
-                _ -> None
 
         def getK exp =
             content // exp
@@ -416,18 +446,44 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | getOrElse Nil
             | mapPartial getJString
 
-        # Get outputs with support for both old (string) and new (object) formats
-        def getOutputPaths =
+        # Get output paths from outputs array (for filtering compatibility)
+        # Then look up hashes from staging_files
+        def jsonInputs = getK `inputs`
+
+        # Get all output paths (from outputs array for back-compat)
+        def jsonOutputPaths =
             content // `outputs`
             | getJArray
             | getOrElse Nil
-            | mapPartial extractPath
+            | mapPartial getJString
 
-        def jsonInputs = getK `inputs`
-        def jsonOutputs = getOutputPaths
         def filteredInputs = fnInputs jsonInputs
-        def filteredOutputs = fnOutputs jsonOutputs
-        def cleanableOutputs = specFile, resultFile, jsonOutputs
+        def filteredOutputPaths = fnOutputs jsonOutputPaths
+        def cleanableOutputs = specFile, resultFile, jsonOutputPaths
+
+        # Convert filtered paths to List Path using hashes from staging_files
+        # Build a lookup function from the hash pairs
+        # Note: find returns Option (Pair a Integer), we need getPairFirst to get the Pair, then getPairSecond for hash
+        def lookupHash path =
+            def matchPath (Pair p _) = p ==* path
+            outputHashPairs
+            | find matchPath
+            | omap getPairFirst
+            | omap getPairSecond
+
+        # For paths not in outputHashPairs (symlinks), compute hash using casStorePath
+        def pathWithHash path =
+            match (lookupHash path)
+                Some hash -> Path path hash
+                # Symlinks aren't in outputHashPairs - compute hash via casStorePath
+                None ->
+                    match (casStorePath path)
+                        Pass hash -> Path path hash
+                        Fail _ -> Path path "0000000000000000000000000000000000000000000000000000000000000000"
+
+        def filteredOutputs: List Path =
+            filteredOutputPaths
+            | map pathWithHash
 
         match jobUsageResult
             Pass jobUsage ->
