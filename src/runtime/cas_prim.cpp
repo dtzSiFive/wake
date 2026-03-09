@@ -29,6 +29,7 @@
 
 #include <iostream>
 
+#include "blake2/blake2.h"
 #include "cas/cas.h"
 #include "cas/content_hash.h"
 #include "prim.h"
@@ -92,6 +93,98 @@ static PRIMFN(prim_cas_store_file) {
   }
 
   std::string hash = result->to_hex();
+  runtime.heap.reserve(reserve_result() + String::reserve(hash.size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, hash)));
+}
+
+// prim "cas_store_path" path: String -> Result String Error
+// Stores a path in CAS (if applicable) and returns its content hash.
+// Handles all file types:
+// - Regular files: stored in CAS, returns content hash
+// - Symlinks: NOT stored in CAS, returns hash of symlink target
+// - Directories: NOT stored in CAS, returns all-zeros hash
+static PRIMTYPE(type_cas_store_path) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+// Hash a symlink target (same algorithm as wake-hash)
+static std::string hash_symlink_target(const char* path) {
+  char buffer[8192];
+  ssize_t len = readlink(path, buffer, sizeof(buffer) - 1);
+  if (len < 0) {
+    return "";  // Error
+  }
+  buffer[len] = '\0';
+
+  // Hash the target using blake2b (same as wake-hash)
+  uint8_t hash[32];
+  blake2b_state S;
+  blake2b_init(&S, sizeof(hash));
+  blake2b_update(&S, reinterpret_cast<uint8_t*>(buffer), len);
+  blake2b_final(&S, hash, sizeof(hash));
+
+  // Convert to hex
+  static const char hex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(64);
+  for (int i = 0; i < 32; ++i) {
+    result += hex[(hash[i] >> 4) & 0xf];
+    result += hex[hash[i] & 0xf];
+  }
+  return result;
+}
+
+static PRIMFN(prim_cas_store_path) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(path, 0);
+
+  struct stat st;
+  if (lstat(path->c_str(), &st) != 0) {
+    runtime.heap.reserve(reserve_result() + String::reserve(50));
+    std::string err = "Failed to stat path: ";
+    err += strerror(errno);
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, err)));
+  }
+
+  std::string hash;
+
+  if (S_ISREG(st.st_mode)) {
+    // Regular file: store in CAS
+    cas::Cas* store = ctx->get_store(".");
+    if (!store) {
+      runtime.heap.reserve(reserve_result() + String::reserve(28));
+      auto err = String::claim(runtime.heap, "CAS store not initialized");
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+    auto result = store->store_blob_from_file(path->c_str());
+    if (!result) {
+      runtime.heap.reserve(reserve_result() + String::reserve(30));
+      auto err = String::claim(runtime.heap, "Failed to store file in CAS");
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+    hash = result->to_hex();
+  } else if (S_ISLNK(st.st_mode)) {
+    // Symlink: hash the target, don't store in CAS
+    hash = hash_symlink_target(path->c_str());
+    if (hash.empty()) {
+      runtime.heap.reserve(reserve_result() + String::reserve(30));
+      auto err = String::claim(runtime.heap, "Failed to read symlink target");
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+  } else if (S_ISDIR(st.st_mode)) {
+    // Directory: return all-zeros hash
+    hash = "0000000000000000000000000000000000000000000000000000000000000000";
+  } else {
+    // Other types (devices, sockets, etc): use a fixed hash
+    hash = "0000000000000000000000000000000000000000000000000000000000000001";
+  }
+
   runtime.heap.reserve(reserve_result() + String::reserve(hash.size()));
   RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, hash)));
 }
@@ -464,6 +557,7 @@ static PRIMFN(prim_cas_ingest_staging_file) {
 
 void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_store_file", prim_cas_store_file, type_cas_store_file, PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_store_path", prim_cas_store_path, type_cas_store_path, PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_has_blob", prim_cas_has_blob, type_cas_has_blob, PRIM_PURE, ctx);
   prim_register(pmap, "cas_materialize_file", prim_cas_materialize_file, type_cas_materialize_file,
                 PRIM_IMPURE, ctx);

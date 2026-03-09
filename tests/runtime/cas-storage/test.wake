@@ -1,0 +1,57 @@
+# Test that job outputs are stored in CAS
+
+# Test file is in CAS after job runs
+export def testFileInCas Unit =
+    require Pass out =
+        makeExecPlan ("sh", "-c", "echo cas-test > cas-out.txt", Nil) Nil
+        | setPlanLabel "test: cas storage"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash = getPathHash out
+
+    # Verify hash is in CAS
+    require True = casHasBlob hash
+    else failWithError "Output file hash {hash} should be in CAS"
+
+    Pass 0
+
+# Test that written files are in CAS
+export def testWriteInCas Unit =
+    require Pass out =
+        write "cas-written.txt" "written to cas"
+
+    def hash = getPathHash out
+
+    require True = casHasBlob hash
+    else failWithError "Written file hash {hash} should be in CAS"
+
+    Pass 0
+
+# Test that same content has same CAS blob
+export def testCasDedup Unit =
+    require Pass out1 =
+        makeExecPlan ("sh", "-c", "echo dedup > dedup1.txt", Nil) Nil
+        | setPlanLabel "test: cas dedup 1"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    require Pass out2 =
+        makeExecPlan ("sh", "-c", "echo dedup > dedup2.txt", Nil) Nil
+        | setPlanLabel "test: cas dedup 2"
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    def hash1 = getPathHash out1
+    def hash2 = getPathHash out2
+
+    # Same content should have same hash (deduplication)
+    require True = hash1 ==* hash2
+    else failWithError "Same content should have same hash"
+
+    # Both should reference the same CAS blob
+    require True = casHasBlob hash1
+    else failWithError "CAS blob should exist"
+
+    Pass 0
+

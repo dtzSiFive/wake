@@ -1748,32 +1748,6 @@ static PRIMFN(prim_job_tag) {
   RETURN(claim_unit(runtime.heap));
 }
 
-static PRIMTYPE(type_add_hash) {
-  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
-         out->unify(Data::typeString);
-}
-
-static PRIMFN(prim_add_hash) {
-  JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(2);
-  STRING(file, 0);
-  STRING(hash, 1);
-  jobtable->imp->db->add_hash(file->as_str(), hash->as_str(), getmtime_ns(file->c_str()));
-  RETURN(args[0]);
-}
-
-static PRIMTYPE(type_get_hash) {
-  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeString);
-}
-
-static PRIMFN(prim_get_hash) {
-  JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(1);
-  STRING(file, 0);
-  std::string hash = jobtable->imp->db->get_hash(file->as_str(), getmtime_ns(file->c_str()));
-  RETURN(String::alloc(runtime.heap, hash));
-}
-
 static PRIMTYPE(type_get_modtime) {
   return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeInteger);
 }
@@ -2061,17 +2035,9 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // a pre-step of a runner fails in someway for instance.
   prim_register(pmap, "job_fail_launch", prim_job_fail_launch, type_job_fail, PRIM_IMPURE);
 
-  // Specifies the hash of a given file. In practice wake kicks off a job against `shim-wake`
-  // to do the hashing.
-  prim_register(pmap, "add_hash", prim_add_hash, type_add_hash, PRIM_IMPURE, jobtable);
-
   /*****************************************************************************************
    * Dead-code elimination ok, but not CSE/const-prop ok (must be ordered wrt. filesystem) *
    *****************************************************************************************/
-
-  // Get's the hash of a file if it was previouslly hashed in the database by a cached
-  // job this session. Returns the empty string otherwise.
-  prim_register(pmap, "get_hash", prim_get_hash, type_get_hash, PRIM_ORDERED, jobtable);
 
   // Get's the modtime of a file, super simple
   prim_register(pmap, "get_modtime", prim_get_modtime, type_get_modtime, PRIM_ORDERED);
