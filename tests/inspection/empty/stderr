@@ -1,0 +1,1 @@
+Failed to open wake.db: Database wake.db is not initialized. Run 'wake --init .' first.
