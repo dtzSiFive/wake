@@ -552,7 +552,7 @@ static bool migrate_via_copy(sqlite3* old_db, const std::string& db_path, int fr
 
   // Apply schema to ensure all current schema objects exist
   if (!run_wake_schema(new_db)) {
-    std::cerr << "Failed to apply schema after migration" << std::endl;
+    std::cerr << "Failed to apply schema after migration." << std::endl;
     sqlite3_close(new_db);
     return false;
   }
