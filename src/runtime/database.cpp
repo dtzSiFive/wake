@@ -414,7 +414,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_find_prior =
       "select job_id, stat_id from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
-      "and keep=1 and stale=0 and stat_id is not null";
+      "and keep=1 and stat_id is not null";
   const char *sql_delete_prior =
       "delete from jobs where job_id in ("
       "  select j2.job_id from jobs j1, jobs j2"
@@ -1503,7 +1503,6 @@ JAST JobReflection::to_structured_json() const {
   JAST json(JSON_OBJECT);
   json.add("job", job);
   json.add("label", label);
-  json.add("stale", stale);
   json.add("directory", directory);
 
   JAST &commandline_json = json.add("commandline", JSON_ARRAY);
@@ -1594,7 +1593,6 @@ JAST JobReflection::to_json() const {
   JAST json(JSON_OBJECT);
   json.add("job", job);
   json.add("label", label.c_str());
-  json.add("stale", stale);
   json.add("directory", directory.c_str());
 
   std::stringstream commandline_stream;
@@ -1707,7 +1705,6 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.stdin_file = rip_column(query, 6);
   desc.starttime = Time(sqlite3_column_int64(query, 7));
   desc.endtime = Time(sqlite3_column_int64(query, 8));
-  desc.stale = sqlite3_column_int64(query, 9) != 0;
   desc.wake_start = Time(sqlite3_column_int64(query, 10));
   desc.wake_cmdline = rip_column(query, 11);
   desc.usage.status = sqlite3_column_int64(query, 12);
@@ -1966,7 +1963,7 @@ std::vector<JobReflection> Database::matching(
   // Adapts the id_query to match the columns needed to create a JobReflection
   std::string query =
       "SELECT j.job_id, j.label, j.directory, j.commandline, j.environment, j.stack, j.stdin, "
-      "j.starttime, j.endtime, j.stale, r.time, r.cmdline, s.status, s.runtime, s.cputime, "
+      "j.starttime, j.endtime, r.time, r.cmdline, s.status, s.runtime, s.cputime, "
       "s.membytes, s.ibytes, s.obytes, j.runner_status\n"
       "FROM jobs j\n"
       "LEFT JOIN stats s\n"
