@@ -61,7 +61,6 @@ struct Database::detail {
   sqlite3_stmt *insert_job;
   sqlite3_stmt *insert_tree;
   sqlite3_stmt *insert_log;
-  sqlite3_stmt *wipe_file;
   sqlite3_stmt *insert_file;
   sqlite3_stmt *update_file;
   sqlite3_stmt *get_log;
@@ -116,7 +115,6 @@ struct Database::detail {
         insert_job(0),
         insert_tree(0),
         insert_log(0),
-        wipe_file(0),
         insert_file(0),
         update_file(0),
         get_log(0),
@@ -385,13 +383,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
-  const char *sql_wipe_file =
-      "update jobs set stale=1 where job_id in"
-      " (select t.job_id from files f, filetree t"
-      "  where f.path=? and f.hash<>? and t.file_id=f.file_id and t.access=1)";
   const char *sql_insert_file =
       "insert or ignore into files(hash, type, mode, modified, path) values (?, ?, ?, ?, ?)";
-  const char *sql_update_file = "update files set hash=?, type=?, mode=?, modified=? where path=?";
+  const char *sql_update_file =
+      "update files set modified=? where hash=? and type=? and mode=? and path=?";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
@@ -520,7 +515,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_job, insert_job);
   PREPARE(sql_insert_tree, insert_tree);
   PREPARE(sql_insert_log, insert_log);
-  PREPARE(sql_wipe_file, wipe_file);
   PREPARE(sql_insert_file, insert_file);
   PREPARE(sql_update_file, update_file);
   PREPARE(sql_get_log, get_log);
@@ -586,7 +580,6 @@ void Database::close() {
   FINALIZE(insert_job);
   FINALIZE(insert_tree);
   FINALIZE(insert_log);
-  FINALIZE(wipe_file);
   FINALIZE(insert_file);
   FINALIZE(update_file);
   FINALIZE(get_log);
@@ -1413,13 +1406,10 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
                         long mode, long modified) {
   const char *why = "Could not insert a hash";
   begin_rw_txn();
-  bind_string(why, imp->wipe_file, 1, file);
-  bind_string(why, imp->wipe_file, 2, hash);
-  single_step(why, imp->wipe_file, imp->debugdb);
-  bind_string(why, imp->update_file, 1, hash);
-  bind_string(why, imp->update_file, 2, type);
-  bind_integer(why, imp->update_file, 3, mode);
-  bind_integer(why, imp->update_file, 4, modified);
+  bind_integer(why, imp->update_file, 1, modified);
+  bind_string(why, imp->update_file, 2, hash);
+  bind_string(why, imp->update_file, 3, type);
+  bind_integer(why, imp->update_file, 4, mode);
   bind_string(why, imp->update_file, 5, file);
   single_step(why, imp->update_file, imp->debugdb);
   bind_string(why, imp->insert_file, 1, hash);
