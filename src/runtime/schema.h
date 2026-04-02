@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "10"
+#define SCHEMA_VERSION "11"
 
 // Connection-level pragmas that must be set on EVERY database connection.
 // These do not persist in the database file and must be reapplied each time.
@@ -36,7 +36,9 @@ inline const char* getWakeSchemaSQL() {
          "  type      text    not null,"
          "  mode      integer not null,"
          "  modified  integer not null);"
-         "create unique index if not exists filenames on files(path);"
+         "create unique index if not exists file_path_hash_type_mode on files(path, hash, type, "
+         "mode);"
+         "create index if not exists filenames on files(path);"
          "create table if not exists stats("
          "  stat_id    integer primary key autoincrement,"
          "  hashcode   integer not null,"  // on collision, prefer largest stat_id (ie: newest)
@@ -62,7 +64,6 @@ inline const char* getWakeSchemaSQL() {
          "  starttime   integer not null default 0,"
          "  endtime     integer not null default 0,"
          "  keep        integer not null default 0,"
-         "  stale       integer not null default 0,"  // 0=false, 1=true
          "  is_atty     integer not null default 0,"  // 0=false, 1=true
          "  runner_status text);"  // NULL=success, non-null string=failure message
          "create index if not exists job on jobs(directory, commandline, environment, stdin, "
