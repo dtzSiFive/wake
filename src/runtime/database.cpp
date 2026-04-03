@@ -399,15 +399,19 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_link_stats =
       "update jobs set stat_id=?, starttime=?, endtime=?, keep=? where job_id=?";
   const char *sql_detect_overlap =
-      "select f.path from filetree t1, filetree t2, files f, run_jobs rj"
+      "select f1.path, t2.job_id from filetree t1, filetree t2, files f1, files f2, run_jobs rj"
       " where t1.job_id=?1 and t1.access=2"
-      " and t2.file_id=t1.file_id and t2.access=2 and t2.job_id<>?1"
-      " and rj.run_id=?2 and rj.job_id=t2.job_id"
-      " and f.file_id=t1.file_id";
+      " and f1.file_id=t1.file_id"
+      " and f2.path=f1.path"  // Same path, possibly different hash/file_id
+      " and t2.file_id=f2.file_id and t2.access=2 and t2.job_id<>?1"
+      " and rj.run_id=?2 and rj.job_id=t2.job_id";
   const char *sql_delete_overlap =
       "delete from jobs where job_id in ("
-      "  select t2.job_id from filetree t1, filetree t2"
-      "  where t1.job_id=?2 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2"
+      "  select t2.job_id from filetree t1, filetree t2, files f1, files f2"
+      "  where t1.job_id=?2 and t1.access=2"
+      "  and f1.file_id=t1.file_id"
+      "  and f2.path=f1.path"  // Same path, possibly different hash/file_id
+      "  and t2.file_id=f2.file_id and t2.access=2"
       "  and t2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
       ")";
@@ -1245,7 +1249,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->detect_overlap, 2, imp->run_id);
   while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
     std::stringstream s;
-    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << std::endl;
+    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << "(this job is " << job << " in run " << imp->run_id << "; other job is " << rip_column(imp->detect_overlap, 1) << ")" << std::endl;
     status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
     fail = true;
   }
