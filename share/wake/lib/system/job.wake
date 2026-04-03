@@ -185,22 +185,13 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             # Maybe materialize a prepared published item to the workspace.
             def maybeMaterialize preparedItem =
                 if needsWorkspaceMaterialization then
-                    # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
-                    if useCasHashes then
-                        materializePreparedStagingItemFromCas preparedItem
-                    else
-                        materializeStagedItemFromStaging preparedItem.getPreparedStagingItemItem
+                    materializePreparedStagingItemFromCas preparedItem
                 else
                     Pass Unit
 
-            # For published items: optionally ingest to CAS, then materialize.
+            # For published items: ingest to CAS, then materialize.
             def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
-                require Pass _ =
-                    # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
-                    if useCasHashes then
-                        ingestPreparedStagingItemIntoCas preparedItem
-                    else
-                        Pass Unit
+                require Pass _ = ingestPreparedStagingItemIntoCas preparedItem
 
                 maybeMaterialize preparedItem
 
@@ -358,13 +349,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
     match cache
         Pair (job, _) _ ->
-            if useCasHashes then
-                require Pass _ = materializeCachedOutputs cachedOutputs
-                else build Unit
+            require Pass _ = materializeCachedOutputs cachedOutputs
+            else build Unit
 
-                confirm True cachedOutputs job
-            else
-                confirm True cachedOutputs job
+            confirm True cachedOutputs job
         Pair Nil _ -> confirm False cachedOutputs (build Unit)
 
 # Only run if the first four arguments differ
