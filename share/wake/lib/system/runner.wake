@@ -387,7 +387,7 @@ export def fuseRunner: Runner =
 
     makeJSONRunnerPlan fuse
     | editJSONRunnerPlanExtraEnv (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
-    | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ getenv "WAKE_CAS"))
+    | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ Some "1"))
     | makeJSONRunner
 
 export def defaultRunner: Runner =
@@ -595,29 +595,26 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def filteredOutputPaths = fnOutputs jsonOutputs
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
-        # TODO: Remove the non-CAS post-staging branch once WAKE_CAS is the default.
-        def outputSetResult = match useCasHashes
-            True -> match (parseStagingFiles content)
-                Pass stagingItems ->
-                    def stagedOutputPaths =
-                        stagingItems
-                        | map getStagingItemDestPath
+        # CAS is now mandatory - always parse staging files.
+        def outputSetResult = match (parseStagingFiles content)
+            Pass stagingItems ->
+                def stagedOutputPaths =
+                    stagingItems
+                    | map getStagingItemDestPath
 
-                    require True = empty filteredOutputPaths || ! empty stagingItems
-                    else failWithError "Missing staging_files metadata for CAS outputs"
+                require True = empty filteredOutputPaths || ! empty stagingItems
+                else failWithError "Missing staging_files metadata for CAS outputs"
 
-                    def jsonStagingRoot =
-                        content // `staging_root`
-                        | getJString
+                def jsonStagingRoot =
+                    content // `staging_root`
+                    | getJString
 
-                    Pass (
-                        Pair
-                        (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
-                        (specFile, resultFile, stagedOutputPaths)
-                    )
-                Fail err -> Fail err
-            False ->
-                stageWorkspaceOutputs jsonOutputs filteredOutputPaths defaultCleanableOutputs False
+                Pass (
+                    Pair
+                    (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
+                    (specFile, resultFile, stagedOutputPaths)
+                )
+            Fail err -> Fail err
 
         match (jobUsageResult; outputSetResult)
             Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
