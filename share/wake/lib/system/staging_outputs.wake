@@ -184,9 +184,10 @@ def stagingHashInput (item: StagingItem): Option (Pair String String) = match it
 # first to avoid re-hashing files whose content is already known (e.g. source files).
 export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
     # Check if the dest path already has a cached hash (and CAS blob, when in CAS mode).
-    def tryCachedFileHash (destPath: String): Option String = match (getCachedPathInfo destPath)
-        Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
-        _ -> None
+    # def tryCachedFileHash (destPath: String): Option String = match (getCachedPathInfo destPath)
+    #     Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
+    #     _ -> None
+    def tryCachedFileHash (destPath: String): Option String = None
 
     def hashInputs =
         stagingItems
