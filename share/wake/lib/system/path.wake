@@ -177,8 +177,10 @@ export def getPathParent (path: Path): Path =
     Path parentName PathTypeDirectory dirHash parentMode
 
 def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
+    def _ = println "getCachedPathInfo({file})"
     def get f = prim "get_cached_path"
     def Pair pathTypeString (Pair hash mode) = get file
+    def _ = println "getCachedPathInfo({file}) -> {pathTypeString}, {hash}, {format mode}"
 
     if hash ==* "" then
         Pass None
