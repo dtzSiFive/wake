@@ -1,0 +1,14 @@
+# GC deletes old jobs when new job outputs same file (across runs)
+
+export def job1 Unit =
+    makeExecPlan ("sh", "-c", "echo job1 > shared.txt", Nil) Nil
+    | setPlanLabel "gc-cross-run: job1"
+    | runJobWith fuseRunner
+    | getJobOutput
+
+export def job2 Unit =
+    makeExecPlan ("sh", "-c", "echo job2 > shared.txt", Nil) Nil
+    | setPlanLabel "gc-cross-run: job2"
+    | runJobWith fuseRunner
+    | getJobOutput
+
