@@ -5,6 +5,8 @@
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
+# !!! For some reason NOT nuking .cas causes problems?
+# rm -rf .cas
 rm -f wake.db* wake.log output.txt result-a.txt result-b.txt
 
 echo "Fresh concurrent runs:"
