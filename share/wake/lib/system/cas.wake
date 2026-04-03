@@ -15,13 +15,9 @@
 
 package wake
 
-export def useCasHashes = match (getenv "WAKE_CAS")
-    Some _ -> True
-    None -> False
-
-export def addCasHashEnv = match (getenv "WAKE_CAS")
-    Some value -> setPlanEnvVar "WAKE_CAS" value
-    None -> identity
+# CAS is now mandatory for multi-wake safety.
+# Always set WAKE_CAS=1 for child processes.
+export def addCasHashEnv = setPlanEnvVar "WAKE_CAS" "1"
 
 # Materialize an item from CAS to workspace.
 def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
