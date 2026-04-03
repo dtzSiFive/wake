@@ -1410,6 +1410,7 @@ static PRIMFN(prim_job_create) {
   out->db->insert_job(dir->as_str(), cmd->as_str(), env->as_str(), stdin_file->as_str(),
                       hash.data[0], label->as_str(), stack.str(), mpz_cmp_si(is_atty, 0) != 0,
                       visible->as_str(), &out->job);
+  std::cerr << "job_create(..., cmd: " << cmd->as_str() << "...) -> " << out->job << "\n";
 
   RETURN(out);
 }
@@ -1484,6 +1485,8 @@ static PRIMFN(prim_job_cache) {
   Usage reuse = jobtable->imp->db->reuse_job(
       dir->as_str(), env->as_str(), cmd->as_str(), stdin_file->as_str(), hash.data[0],
       mpz_cmp_si(is_atty, 0) != 0, visible->as_str(), jobtable->imp->check, job, files, &pathtime);
+
+  std::cerr << "job_cache(..., cmd: " << cmd->as_str() << "...) -> " << (reuse.found ? "hit " : "miss") << "\n";
 
   size_t need = reserve_tuple2() + reserve_tree(files) + reserve_list(1) + Job::reserve();
   runtime.heap.reserve(need);
@@ -1733,6 +1736,8 @@ static PRIMFN(prim_job_finish) {
 
   parse_usage(&job->report, args + 4, runtime, scope);
   job->report.found = true;
+
+  std::cerr << "job_finish(job=" << job << ")\n";
 
   bool keep = !job->bad_launch && !job->bad_finish && job->keep && job->report.status == 0;
   job->db->finish_job(job->job, inputs->as_str(), outputs->as_str(), all_outputs->as_str(),
