@@ -1543,6 +1543,7 @@ void Database::replay_output(long job, const char *stdout, const char *stderr,
 void Database::add_hash(const std::string &file, const std::string &type, const std::string &hash,
                         long mode, long modified) {
   const char *why = "Could not insert a hash";
+  std::cerr << "add_hash: " << file << "(type=" << type <<", hash=" << hash << ", mode=" << std::oct << mode << ", modified=" << modified << ")\n";
   begin_rw_txn();
   bind_integer(why, imp->update_file, 1, modified);
   bind_string(why, imp->update_file, 2, hash);
