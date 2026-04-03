@@ -198,6 +198,14 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
   struct timeval start;
   gettimeofday(&start, 0);
 
+#ifdef __linux__
+  // This process should terminate if the parent process exits.
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) {
+    std::cerr << "run_in_fuse prctl: " << strerror(errno) << std::endl;
+    exit(1);
+  }
+#endif
+
   pid_t payload_pid = fork();
   if (payload_pid == 0) {
     std::vector<std::string> command = args.command;
