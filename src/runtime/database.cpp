@@ -1709,22 +1709,22 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.stdin_file = rip_column(query, 6);
   desc.starttime = Time(sqlite3_column_int64(query, 7));
   desc.endtime = Time(sqlite3_column_int64(query, 8));
-  desc.wake_start = Time(sqlite3_column_int64(query, 10));
-  desc.wake_cmdline = rip_column(query, 11);
-  desc.usage.status = sqlite3_column_int64(query, 12);
-  desc.usage.runtime = sqlite3_column_double(query, 13);
-  desc.usage.cputime = sqlite3_column_double(query, 14);
-  desc.usage.membytes = sqlite3_column_int64(query, 15);
-  desc.usage.ibytes = sqlite3_column_int64(query, 16);
-  desc.usage.obytes = sqlite3_column_int64(query, 17);
+  desc.wake_start = Time(sqlite3_column_int64(query, 9));
+  desc.wake_cmdline = rip_column(query, 10);
+  desc.usage.status = sqlite3_column_int64(query, 11);
+  desc.usage.runtime = sqlite3_column_double(query, 12);
+  desc.usage.cputime = sqlite3_column_double(query, 13);
+  desc.usage.membytes = sqlite3_column_int64(query, 14);
+  desc.usage.ibytes = sqlite3_column_int64(query, 15);
+  desc.usage.obytes = sqlite3_column_int64(query, 16);
 
-  int runner_status_type = sqlite3_column_type(query, 18);
+  int runner_status_type = sqlite3_column_type(query, 17);
   if (runner_status_type == SQLITE_NULL) {
     // NULL in database - return false to indicate success (no error)
     desc.runner_status = {false, ""};
   } else {
     // Non-NULL value (including empty string) - return true with the actual status message
-    desc.runner_status = {true, rip_column(query, 18)};
+    desc.runner_status = {true, rip_column(query, 17)};
   }
 
   if (desc.stdin_file.empty()) desc.stdin_file = "/dev/null";
