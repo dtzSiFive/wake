@@ -62,12 +62,14 @@ struct Database::detail {
   sqlite3_stmt *stats_job;
   sqlite3_stmt *insert_job;
   sqlite3_stmt *insert_tree;
+  sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
   sqlite3_stmt *update_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
+  sqlite3_stmt *get_tree_id;
   sqlite3_stmt *add_stats;
   sqlite3_stmt *link_stats;
   sqlite3_stmt *detect_overlap;
@@ -117,12 +119,14 @@ struct Database::detail {
         stats_job(0),
         insert_job(0),
         insert_tree(0),
+        insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
         update_file(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
+        get_tree_id(0),
         add_stats(0),
         link_stats(0),
         detect_overlap(0),
@@ -384,6 +388,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_tree =
       "insert into filetree(access, job_id, file_id)"
       " values(?, ?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
+  const char *sql_insert_tree_file_id =
+      "insert into filetree(access, job_id, file_id)"
+      " values(?, ?, ?)";
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
@@ -395,6 +402,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
       "select f.path, f.hash, f.type, f.mode from filetree t, files f"
+      " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
+  const char *sql_get_tree_id =
+      "select f.path, f.file_id from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_add_stats =
       "insert into stats(hashcode, status, runtime, cputime, membytes, ibytes, obytes)"
@@ -522,12 +532,14 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_stats_job, stats_job);
   PREPARE(sql_insert_job, insert_job);
   PREPARE(sql_insert_tree, insert_tree);
+  PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
   PREPARE(sql_update_file, update_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
+  PREPARE(sql_get_tree_id, get_tree_id);
   PREPARE(sql_add_stats, add_stats);
   PREPARE(sql_link_stats, link_stats);
   PREPARE(sql_detect_overlap, detect_overlap);
@@ -588,12 +600,14 @@ void Database::close() {
   FINALIZE(stats_job);
   FINALIZE(insert_job);
   FINALIZE(insert_tree);
+  FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
   FINALIZE(update_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
+  FINALIZE(get_tree_id);
   FINALIZE(add_stats);
   FINALIZE(link_stats);
   FINALIZE(detect_overlap);
@@ -1030,7 +1044,7 @@ bool foreach_pathinfo(std::string_view s, F &&f) {
     if (m_end == std::string_view::npos || m_end == m_start) return false;
 
     long mode;
-    auto [_, ec] = std::from_chars(s.data() + m_start, s.data() + m_end, mode, 8);
+    auto [_, ec] = std::from_chars(s.data() + m_start, s.data() + m_end, mode);
     if (ec != std::errc()) return false;
 
     const PathInfo pi{s.substr(pos, p_end - pos), s.substr(h_start, h_end - h_start), s.substr(t_start, t_end-t_start), mode};
@@ -1042,7 +1056,7 @@ bool foreach_pathinfo(std::string_view s, F &&f) {
       std::invoke(f, pi);
     }
 
-    pos = h_end + 1;
+    pos = m_end + 1;
   }
 
   return true;
@@ -1406,38 +1420,30 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->link_stats, 5, job);
   single_step(why, imp->link_stats, imp->debugdb);
 
-  // Grab the visible set
-  std::unordered_map<std::string, PathInfo> visible_paths;
-  bind_integer(why, imp->get_tree, 1, job);
-  bind_integer(why, imp->get_tree, 2, VISIBLE);
-  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
-    auto path = rip_column(imp->get_tree, 0);
-    auto hash = rip_column(imp->get_tree, 1);
-    auto type = rip_column(imp->get_tree, 2);
-    long mode = sqlite3_column_int64(imp->get_tree, 3);
-    PathInfo vis{path, hash, type, mode};
-    visible_paths.emplace(std::move(path), std::move(vis));
+  // Grab the visible set.
+  std::unordered_map<std::string, long> visible_files;
+  bind_integer(why, imp->get_tree_id, 1, job);
+  bind_integer(why, imp->get_tree_id, 2, VISIBLE);
+  while (sqlite3_step(imp->get_tree_id) == SQLITE_ROW) {
+    auto path = rip_column(imp->get_tree_id, 0);
+    auto file_id = sqlite3_column_int64(imp->get_tree_id, 1);
+    visible_files.emplace(std::move(path), file_id);
   }
-  finish_stmt(why, imp->get_tree, imp->debugdb);
+  finish_stmt(why, imp->get_tree_id, imp->debugdb);
 
   // Insert inputs, confirming they are visible
   scan_until_sep('\0', inputs, [&, this](const std::string &input) {
-    auto it = visible_paths.find(input);
-    if (it == visible_paths.end()) {
+    auto it = visible_files.find(input);
+    if (it == visible_files.end()) {
       std::stringstream s;
       s << "Job " << job << " erroneously added input '" << input
         << "' which was not a visible file." << std::endl;
       status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
     } else {
-      // TODO: Use different filetree insert statement; we can get file_id instead of get_tree above.
-      bind_integer(why, imp->insert_tree, 1, INPUT);
-      bind_integer(why, imp->insert_tree, 2, job);
-      bind_string(why, imp->insert_tree, 3, input);
-      auto &pi = it->second;
-      bind_string(why, imp->insert_tree, 4, pi.hash);
-      bind_string(why, imp->insert_tree, 5, pi.type);
-      bind_integer(why, imp->insert_tree, 6, pi.mode);
-      single_step(why, imp->insert_tree, imp->debugdb);
+      bind_integer(why, imp->insert_tree_file_id, 1, INPUT);
+      bind_integer(why, imp->insert_tree_file_id, 2, job);
+      bind_integer(why, imp->insert_tree_file_id, 3, it->second);
+      single_step(why, imp->insert_tree_file_id, imp->debugdb);
     }
   });
 
