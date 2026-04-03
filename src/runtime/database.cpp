@@ -1117,6 +1117,12 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     return out;
   }
 
+  //std::cerr << "REUSE CANDIDATES FOR:\n";
+  //std::cerr << "commandline: " << commandline << "\n";
+  //for (auto &m : matches) {
+  //  std::cerr << "\tcandidate: " << m.job << "\n";
+  //}
+
   auto match_it = std::find_if(matches.begin(), matches.end(), [&](const auto &candidate) -> bool {
     bind_integer(why, imp->get_tree, 1, candidate.job);
     bind_integer(why, imp->get_tree, 2, INPUT);
@@ -1127,12 +1133,15 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
       auto type = rip_column(imp->get_tree, 2);
       long mode = sqlite3_column_int64(imp->get_tree, 3);
       PathInfo vis{path, hash, type, mode};
+      // std::cerr << "job: " << candidate.job << " <-- " << vis.path << ", " << vis.hash << ", " << vis.type << ", mode=" << std::oct << mode << "\n";
 
       auto it = vis_hashes->find(path);
       if (it == vis_hashes->end() || it->second != vis) {
         finish_stmt(why, imp->get_tree, imp->debugdb);
         return false;
       }
+      //assert(it->second.hash == vis.hash);
+      //std::cerr << "reuse's visible has hash: " << it->second.hash << "\n";
     }
     finish_stmt(why, imp->get_tree, imp->debugdb);
     return true;
