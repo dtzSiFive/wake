@@ -9,10 +9,10 @@ WAKE="${WAKE:-wake}"
 rm -f wake.db* wake.log shared.txt
 
 # Run 1: job1 creates shared.txt
-"${WAKE}" -q -x 'job1 Unit'
+"${WAKE}" -x 'job1 Unit'
 
 # Run 2: job2 creates shared.txt, should GC job1
-"${WAKE}" -q -x 'job2 Unit'
+"${WAKE}" -x 'job2 Unit'
 
 # Only job2 should remain (job1 was GC'd)
 output=$("${WAKE}" --output '*shared.txt' --simple 2>&1)
