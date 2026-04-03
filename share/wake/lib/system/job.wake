@@ -147,9 +147,16 @@ def jobSignature cmd res fni fno keep =
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
+    def pstr p =
+        catWith "\0" (
+            p.getPathName,
+            p.getPathHash,
+            pathTypeToString p.getPathType,
+            str p.getPathMode,
+        )
     def visKey =
         vis
-        | map getPathName
+        | map pstr
         | implode
 
     def jobKey = JobKey dir stdin env.implode cmd.implode hash visKey isatty.booleanToInteger
@@ -264,7 +271,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 Some root -> rmdir root
                 None -> Unit
 
-            primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality
+            primJobFinish job inputs.implode preparedOutputPaths.pstr cleanable.pstr reality
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
