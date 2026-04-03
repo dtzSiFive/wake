@@ -311,11 +311,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     }
 
     char *fail = nullptr;
-    std::cerr << "Running schema txn!\n";
     ret = sqlite3_exec(imp->db, getWakeSchemaSQLTxn(), 0, 0, &fail);
-    std::cerr << "Done with schema txn!\n";
     if (ret == SQLITE_OK) {
-      std::cerr << "OK!\n";
       indicator.finish();
       break;
     }
