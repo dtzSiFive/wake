@@ -86,13 +86,13 @@ struct StagedFileData {
 
 // Symbolic link: has target path and mtime
 struct StagedSymlinkData {
-  std::string target;  // Symlink target path
+  std::string target;     // Symlink target path
   struct timespec mtime;  // Modification timestamp
 };
 
 // Directory: has mode and mtime
 struct StagedDirectoryData {
-  mode_t mode;  // Directory permissions
+  mode_t mode;            // Directory permissions
   struct timespec mtime;  // Modification timestamp
 };
 
@@ -145,26 +145,24 @@ struct StagedItem {
 
   // Get mode (valid for file, directory, and hardlink)
   mode_t mode() const {
-    return std::visit(
-        overloaded{
-            [](const StagedFileData &f) { return f.mode; },
-            [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
-            [](const StagedDirectoryData &d) { return d.mode; },
-            [](const StagedHardlinkData &h) { return h.mode; },
-        },
-        data);
+    return std::visit(overloaded{
+                          [](const StagedFileData &f) { return f.mode; },
+                          [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
+                          [](const StagedDirectoryData &d) { return d.mode; },
+                          [](const StagedHardlinkData &h) { return h.mode; },
+                      },
+                      data);
   }
 
   // Set mode (for chmod support)
   void set_mode(mode_t m) {
-    std::visit(
-        overloaded{
-            [m](StagedFileData &f) { f.mode = m; },
-            [](StagedSymlinkData &) {},  // Symlinks don't have mode
-            [m](StagedDirectoryData &d) { d.mode = m; },
-            [m](StagedHardlinkData &h) { h.mode = m; },
-        },
-        data);
+    std::visit(overloaded{
+                   [m](StagedFileData &f) { f.mode = m; },
+                   [](StagedSymlinkData &) {},  // Symlinks don't have mode
+                   [m](StagedDirectoryData &d) { d.mode = m; },
+                   [m](StagedHardlinkData &h) { h.mode = m; },
+               },
+               data);
   }
 
   // Get mtime
@@ -346,7 +344,8 @@ void Job::parse() {
       try {
         const std::string &mode_value = x.second.get("mode").value;
         if (!mode_value.empty()) mode = static_cast<mode_t>(std::stoul(mode_value, nullptr, 10));
-      } catch (const std::exception &) {}
+      } catch (const std::exception &) {
+      }
       if (type.empty()) {
         fprintf(stderr, "Visible entry object is missing required 'type' field\n");
         continue;
@@ -444,33 +443,33 @@ void Job::dump(const std::string &job_id) {
         s << "\"type\":\"" << sf.type_name() << "\"";
 
         // Emit type-specific fields using std::visit
-        std::visit(
-            overloaded{
-                [&s](const StagedFileData &f) {
-                  s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
-                  s << ",\"mode\":" << (f.mode & 07777);
-                  s << ",\"mtime_sec\":" << f.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << f.mtime.tv_nsec;
-                },
-                [&s](const StagedSymlinkData &l) {
-                  s << ",\"target\":\"" << json_escape(l.target) << "\"";
-                  s << ",\"mtime_sec\":" << l.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
-                },
-                [&s](const StagedDirectoryData &d) {
-                  s << ",\"mode\":" << (d.mode & 07777);
-                  s << ",\"mtime_sec\":" << d.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
-                },
-                [&s](const StagedHardlinkData &h) {
-                  // Hardlink has same staging_path as source - client uses it as deduplication key
-                  s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
-                  s << ",\"mode\":" << (h.mode & 07777);
-                  s << ",\"mtime_sec\":" << h.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << h.mtime.tv_nsec;
-                },
-            },
-            sf.data);
+        std::visit(overloaded{
+                       [&s](const StagedFileData &f) {
+                         s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
+                         s << ",\"mode\":" << (f.mode & 07777);
+                         s << ",\"mtime_sec\":" << f.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << f.mtime.tv_nsec;
+                       },
+                       [&s](const StagedSymlinkData &l) {
+                         s << ",\"target\":\"" << json_escape(l.target) << "\"";
+                         s << ",\"mtime_sec\":" << l.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
+                       },
+                       [&s](const StagedDirectoryData &d) {
+                         s << ",\"mode\":" << (d.mode & 07777);
+                         s << ",\"mtime_sec\":" << d.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
+                       },
+                       [&s](const StagedHardlinkData &h) {
+                         // Hardlink has same staging_path as source - client uses it as
+                         // deduplication key
+                         s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
+                         s << ",\"mode\":" << (h.mode & 07777);
+                         s << ",\"mtime_sec\":" << h.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << h.mtime.tv_nsec;
+                       },
+                   },
+                   sf.data);
 
         s << "}";
         first = false;
@@ -511,8 +510,7 @@ bool Job::is_writeable(const std::string &path) {
 }
 
 bool Job::is_readable(const std::string &path) {
-  return is_visible(path) || is_writeable(path) ||
-         (staged_paths.find(path) != staged_paths.end());
+  return is_visible(path) || is_writeable(path) || (staged_paths.find(path) != staged_paths.end());
 }
 
 bool Job::should_erase() const { return 0 == uses && 0 == json_in_uses && 0 == json_out_uses; }
@@ -673,43 +671,42 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
     }
 
     // Fill stat buffer based on staged item type
-    return std::visit(
-        overloaded{
-            [stbuf](const StagedFileData &f) {
-              // Stat the actual staging file
-              int res = stat(f.staging_path.c_str(), stbuf);
-              if (res == -1) return -errno;
-              // Combine file type from staging file with tracked permissions
-              stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
-              return 0;
-            },
-            [stbuf](const StagedSymlinkData &l) {
-              // Return synthetic symlink stat
-              memset(stbuf, 0, sizeof(*stbuf));
-              stbuf->st_mode = S_IFLNK | 0777;
-              stbuf->st_nlink = 1;
-              stbuf->st_size = l.target.size();
-              stbuf->st_uid = getuid();
-              stbuf->st_gid = getgid();
-              stbuf->st_mtim = l.mtime;
-              return 0;
-            },
-            [stbuf](const StagedDirectoryData &d) {
-              // Return synthetic directory stat
-              memset(stbuf, 0, sizeof(*stbuf));
-              stbuf->st_mode = S_IFDIR | (d.mode & 07777);
-              stbuf->st_nlink = 2;
-              stbuf->st_uid = getuid();
-              stbuf->st_gid = getgid();
-              stbuf->st_mtim = d.mtime;
-              return 0;
-            },
-            [](const StagedHardlinkData &) {
-              // Should not reach here - hardlinks are resolved above
-              return -ENOENT;
-            },
-        },
-        sf->data);
+    return std::visit(overloaded{
+                          [stbuf](const StagedFileData &f) {
+                            // Stat the actual staging file
+                            int res = stat(f.staging_path.c_str(), stbuf);
+                            if (res == -1) return -errno;
+                            // Combine file type from staging file with tracked permissions
+                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
+                            return 0;
+                          },
+                          [stbuf](const StagedSymlinkData &l) {
+                            // Return synthetic symlink stat
+                            memset(stbuf, 0, sizeof(*stbuf));
+                            stbuf->st_mode = S_IFLNK | 0777;
+                            stbuf->st_nlink = 1;
+                            stbuf->st_size = l.target.size();
+                            stbuf->st_uid = getuid();
+                            stbuf->st_gid = getgid();
+                            stbuf->st_mtim = l.mtime;
+                            return 0;
+                          },
+                          [stbuf](const StagedDirectoryData &d) {
+                            // Return synthetic directory stat
+                            memset(stbuf, 0, sizeof(*stbuf));
+                            stbuf->st_mode = S_IFDIR | (d.mode & 07777);
+                            stbuf->st_nlink = 2;
+                            stbuf->st_uid = getuid();
+                            stbuf->st_gid = getgid();
+                            stbuf->st_mtim = d.mtime;
+                            return 0;
+                          },
+                          [](const StagedHardlinkData &) {
+                            // Should not reach here - hardlinks are resolved above
+                            return -ENOENT;
+                          },
+                      },
+                      sf->data);
   }
 
   if (g_use_cas) {
@@ -989,7 +986,8 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
           already_listed.insert(name);
           filler(buf, name.c_str(), 0, 0);
         }
-      } else if (dest.size() > dir_prefix.size() && dest.compare(0, dir_prefix.size(), dir_prefix) == 0) {
+      } else if (dest.size() > dir_prefix.size() &&
+                 dest.compare(0, dir_prefix.size(), dir_prefix) == 0) {
         std::string rest = dest.substr(dir_prefix.size());
         size_t slash = rest.find('/');
         std::string name = (slash == std::string::npos) ? rest : rest.substr(0, slash);
@@ -1010,7 +1008,8 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         already_listed.insert(name);
         filler(buf, name.c_str(), 0, 0);
       }
-    } else if (path.size() > dir_prefix.size() && path.compare(0, dir_prefix.size(), dir_prefix) == 0) {
+    } else if (path.size() > dir_prefix.size() &&
+               path.compare(0, dir_prefix.size(), dir_prefix) == 0) {
       std::string rest = path.substr(dir_prefix.size());
       size_t slash = rest.find('/');
       std::string name = (slash == std::string::npos) ? rest : rest.substr(0, slash);
@@ -1134,7 +1133,8 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     }
 
     // Include PID to avoid collisions between concurrent wake processes
-    std::string staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+    std::string staging_path =
+        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
     mode_t perm_bits = mode & 07777;
     int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
     if (fd == -1) return -errno;
@@ -1572,8 +1572,8 @@ static int wakefuse_link(const char *from, const char *to) {
       // staging path. This avoids races where one consumer (CAS ingestion or workspace
       // materialization) deletes the shared file before another can read it.
       // Uses reflink (copy-on-write) when the filesystem supports it.
-      std::string new_staging_path =
-          g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+      std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
+                                     std::to_string(++g_staging_counter);
       auto copy_result =
           wcl::reflink_or_copy_file(src_staging_path, new_staging_path, src_mode & 07777);
       if (!copy_result) return -copy_result.error();
