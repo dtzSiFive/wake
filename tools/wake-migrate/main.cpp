@@ -392,6 +392,27 @@ static std::vector<Migration> get_migrations() {
        },
        "Per-job hashes: remove stale column, unique index on (path, hash, type, mode)"},
 
+      // Version 12 -> 13: Add modified to files unique index
+      // - files table already has modified column
+      // - Just need to change unique index from (path, hash, type, mode)
+      //   to (path, hash, type, mode, modified)
+      {12, 13,
+       [](sqlite3* db) -> bool {
+         // Drop old unique index
+         if (!exec_sql(db, "DROP INDEX IF EXISTS file_path_hash_type_mode;")) return false;
+
+         // Create new unique index with modified included
+         const char* create_new_index = R"(
+           CREATE UNIQUE INDEX file_path_hash_type_mode_modified
+           ON files(path, hash, type, mode, modified);
+         )";
+
+         if (!exec_sql(db, create_new_index)) return false;
+
+         return true;
+       },
+       "Add modified to files unique index"},
+
   };
 }
 
