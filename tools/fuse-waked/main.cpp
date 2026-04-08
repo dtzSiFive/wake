@@ -719,7 +719,9 @@ static void move_members(std::set<std::string> &from, std::set<std::string> &to,
     bool last;
     do {
       last = i == e;  // Record this now, because we erase i
-      to.insert(dest + i->substr(dir.size()));
+      auto tostr = dest + i->substr(dir.size());
+      fprintf(stderr, "  move_members: %s -> %s (e: %s) (dir: %s, dest: %s); in 'to'? %zu\n",  i->data(), tostr.data(), e->data(), dir.data(), dest.data(), to.count(tostr));
+      to.insert(tostr);
       from.erase(i++);  // increment i and then erase the old i
     } while (!last);
   }
@@ -748,6 +750,8 @@ static int wakefuse_rename(const char *from, const char *to) {
       return -EEXIST;
   }
 
+  fprintf(stderr, "from: %s, to: %s; keyf: (%s, %s); keyt(%s, %s)\n", from, to, keyf.first.data(), keyf.second.data(), keyt.first.data(), keyt.second.data());
+
   if (keyt.first != keyf.first) return -EXDEV;
 
   if (!it->second.is_readable(keyf.second)) return -ENOENT;
@@ -766,7 +770,9 @@ static int wakefuse_rename(const char *from, const char *to) {
   it->second.files_wrote.insert(keyt.second);
 
   // Move any children as well
+  fprintf(stderr, "move write to write:\n");
   move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second);
+  fprintf(stderr, "move read to write:\n");
   move_members(it->second.files_read, it->second.files_wrote, keyf.second, keyt.second);
 
   return 0;
