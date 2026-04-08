@@ -701,7 +701,7 @@ static int wakefuse_symlink_trace(const char *from, const char *to) {
 }
 
 static void move_members(std::set<std::string> &from, std::set<std::string> &to,
-                         const std::string &dir, const std::string &dest) {
+                         const std::string &dir, const std::string &dest, bool check) {
   // Find half-open range [i, e) that includes all strings matching `{dir}/.*`
   auto i = from.upper_bound(dir + "/");
   auto e = from.lower_bound(dir + "0");  // '0' = '/' + 1
@@ -721,6 +721,8 @@ static void move_members(std::set<std::string> &from, std::set<std::string> &to,
       last = i == e;  // Record this now, because we erase i
       auto tostr = dest + i->substr(dir.size());
       fprintf(stderr, "  move_members: %s -> %s (e: %s) (dir: %s, dest: %s); in 'to'? %zu\n",  i->data(), tostr.data(), e->data(), dir.data(), dest.data(), to.count(tostr));
+      assert((!check || to.count(tostr)) && "files_wrote doesn't have dest of move_members from files_read (tostr)!");
+      assert((!check || to.count(*i)) && "files_wrote doesn't have source of move_members from files_read (i)!");
       to.insert(tostr);
       from.erase(i++);  // increment i and then erase the old i
     } while (!last);
@@ -771,9 +773,9 @@ static int wakefuse_rename(const char *from, const char *to) {
 
   // Move any children as well
   fprintf(stderr, "move write to write:\n");
-  move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second);
+  move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second, false);
   fprintf(stderr, "move read to write:\n");
-  move_members(it->second.files_read, it->second.files_wrote, keyf.second, keyt.second);
+  move_members(it->second.files_read, it->second.files_wrote, keyf.second, keyt.second, true);
 
   return 0;
 }
