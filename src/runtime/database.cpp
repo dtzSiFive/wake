@@ -814,10 +814,20 @@ void Database::clean() {
   // Add checkpoint after cleanup operations
   checkpoint(false);  // Non-blocking checkpoint for sync point
 
-  // This cannot be a prepared statement, because pragmas may run on prepare
-  char *fail;
-  int ret = sqlite3_exec(imp->db, "pragma incremental_vacuum;", 0, 0, &fail);
-  if (ret != SQLITE_OK) std::cerr << "Could not recover space: " << fail << std::endl;
+  vacuum();
+}
+
+void Database::vacuum(bool incremental) {
+  // Non-incremental requires extended exclusive access to entire DB.
+  auto *command = incremental ? "PRAGMA incremental_vacuum;" : "PRAGMA vacuum;";
+
+  char *fail = nullptr;
+  int ret = sqlite3_exec(imp->db, command, 0, 0, &fail);
+  auto *err = fail ? fail : "unknown error";
+  auto *kind = incremental ? "incremental" : "full";
+  if (ret != SQLITE_OK)
+    std::cerr << "Could not recover space (" << kind << "):" << err << std::endl;
+  sqlite3_free(fail);
 }
 
 void Database::checkpoint(bool blocking) {
