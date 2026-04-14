@@ -30,7 +30,7 @@ export tuple JobKey =
     export cmd: String
     # A unique hash used to discern two nearly identical jobs with some environmental change
     export signature: Integer
-    # The list of files (separated by \0) that the job can see when running
+    # The list of files (path, hash, type, and mode; separated by \0) that the job can see when running
     export visible: String
     # Boolean integer representing if the job should be launched such that it appears to be
     # launched directly by a human (ie launched interactively)
@@ -148,9 +148,16 @@ def jobSignature cmd res fni fno keep =
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
+    def pstr p =
+        catWith "\0" (
+            p.getPathName,
+            p.getPathHash,
+            pathTypeToString p.getPathType,
+            str p.getPathMode,
+        )
     def visKey =
         vis
-        | map getPathName
+        | map pstr
         | implode
 
     def jobKey = JobKey dir stdin env.implode cmd.implode hash visKey isatty.booleanToInteger
@@ -256,10 +263,9 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | omap getPairFirst
                 | getOrElse None
 
-            def preparedOutputPaths =
+            def preparedOutputStagingItems =
                 workspaceOutputsReadyResult
                 | getWhenFail Nil
-                | map getPreparedStagingItemPathName
 
             # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
             # only after all materialization work has completed.
@@ -288,7 +294,18 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
             def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
 
-            wait (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality) clResult
+            def pstr (preparedItem: PreparedStagingItem) =
+                def item = preparedItem.getPreparedStagingItemItem
+                def hash = preparedItem.getPreparedStagingItemHash
+                catWith "\0" (
+                    getStagingItemDestPath item,
+                    hash,
+                    pathTypeToString (getStagingItemPathType item),
+                    str (getStagingItemMode item),
+                )
+            def preparedOutputStrings = map pstr preparedOutputStagingItems
+
+            wait (\_ primJobFinish job inputs.implode preparedOutputStrings.implode cleanable.implode reality) clResult
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
