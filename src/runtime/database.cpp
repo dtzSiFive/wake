@@ -440,7 +440,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "update stats set pathtime=runtime+("
       "  select coalesce(max(s.pathtime),0) from filetree f1, filetree f2, jobs j, stats s"
       "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=1 and "
-      "f2.job_id=j.job_id and j.stat_id=s.stat_id"
+      "f2.job_id=j.job_id and j.stat_id=s.stat_id and f1.modified=f2.modified"
       ") where stat_id=(select stat_id from jobs where job_id=?1)";
   const char *sql_tag_job = "insert into tags(job_id, uri, content) values(?, ?, ?)";
   const char *sql_get_tags = "select job_id, uri, content from tags where job_id=?";
@@ -456,7 +456,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " FROM filetree l"
       " INNER JOIN filetree r"
       " ON l.file_id = r.file_id"
-      " WHERE l.access = 2 AND r.access = 0";
+      " WHERE l.access = 2 AND r.access = 0"
+      " AND r.modified = r.modified";
   const char *sql_get_output_files =
       "select f.path"
       " from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
