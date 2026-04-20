@@ -1105,6 +1105,8 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 
   end_txn();  // End RO transaction
 
+  // Don't check workspace, the referenced files as expected to be in CAS.
+#if 0
   // Confirm all outputs still exist
   // TODO: Does this make sense? If in files table should be in CAS...
   if (out.found) {
@@ -1116,6 +1118,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
       }
     }
   }
+#endif
 
   // Only grab write lock if plan to actually use this!
   begin_rw_txn();
