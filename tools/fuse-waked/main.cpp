@@ -2301,14 +2301,13 @@ static void handle_exit(int sig) {
     do {
       int ret = waitpid(pid, &status, 0);
       if (ret == -1) {
-        if (errno == EINTR) {
-          continue;
-        } else {
-          fprintf(stderr, "waitpid(%d): %s\n", pid, strerror(errno));
-          break;
-        }
+        status = 0;
+        if (errno == EINTR) continue;
+        fprintf(stderr, "waitpid(%d): %s\n", pid, strerror(errno));
+        break;
       }
-    } while (WIFSTOPPED(status));
+      if (!WIFSTOPPED(status)) break;
+    } while (true);
     pid = -1;
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 42) {
