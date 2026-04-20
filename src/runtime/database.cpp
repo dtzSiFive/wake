@@ -73,7 +73,9 @@ struct Database::detail {
   sqlite3_stmt *add_stats;
   sqlite3_stmt *link_stats;
   sqlite3_stmt *detect_overlap;
+  sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
+  sqlite3_stmt *delete_prior;
   sqlite3_stmt *fetch_cached_path;
   sqlite3_stmt *delete_jobs;
   sqlite3_stmt *delete_dups;
@@ -127,7 +129,9 @@ struct Database::detail {
         add_stats(0),
         link_stats(0),
         detect_overlap(0),
+        delete_overlap(0),
         find_prior(0),
+        delete_prior(0),
         fetch_cached_path(0),
         delete_jobs(0),
         delete_dups(0),
@@ -386,10 +390,28 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " and f2.path=f1.path"  // Same path, possibly different hash/file_id
       " and t2.file_id=f2.file_id and t2.access=2 and t2.job_id<>?1"
       " and rj.run_id=?2 and rj.job_id=t2.job_id";
+  const char *sql_delete_overlap =
+      "delete from jobs where job_id in ("
+      "  select t2.job_id from filetree t1, filetree t2, files f1, files f2"
+      "  where t1.job_id=?2 and t1.access=2"
+      "  and f1.file_id=t1.file_id"
+      "  and f2.path=f1.path"  // Same path, possibly different hash/file_id
+      "  and t2.file_id=f2.file_id and t2.access=2"
+      "  and t2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
+      ")";
   const char *sql_find_prior =
       "select job_id, stat_id from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
       "and keep=1 and stat_id is not null";
+  const char *sql_delete_prior =
+      "delete from jobs where job_id in ("
+      "  select j2.job_id from jobs j1, jobs j2"
+      "  where j1.job_id=?2 and j1.directory=j2.directory and j1.commandline=j2.commandline"
+      "  and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty"
+      "  and j2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
+      ")";
   const char *sql_fetch_cached_path =
       "select f.hash, f.type, f.mode from filetree t "
       "join files f on t.file_id = f.file_id "
@@ -495,7 +517,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_add_stats, add_stats);
   PREPARE(sql_link_stats, link_stats);
   PREPARE(sql_detect_overlap, detect_overlap);
+  PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
+  PREPARE(sql_delete_prior, delete_prior);
   PREPARE(sql_fetch_cached_path, fetch_cached_path);
   PREPARE(sql_delete_jobs, delete_jobs);
   PREPARE(sql_delete_dups, delete_dups);
@@ -560,7 +584,9 @@ void Database::close() {
   FINALIZE(add_stats);
   FINALIZE(link_stats);
   FINALIZE(detect_overlap);
+  FINALIZE(delete_overlap);
   FINALIZE(find_prior);
+  FINALIZE(delete_prior);
   FINALIZE(fetch_cached_path);
   FINALIZE(delete_jobs);
   FINALIZE(delete_dups);
@@ -1357,6 +1383,16 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     bind_string(why, imp->insert_unhashed_file, 2, unhashed_output);
     single_step(why, imp->insert_unhashed_file, imp->debugdb);
   }
+
+  // Eagerly delete duplicate jobs (same command signature) from completed runs
+  bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
+  bind_integer(why, imp->delete_prior, 2, job);
+  single_step(why, imp->delete_prior, imp->debugdb);
+
+  // Eagerly delete jobs with overlapping outputs from completed runs
+  bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
+  bind_integer(why, imp->delete_overlap, 2, job);
+  single_step(why, imp->delete_overlap, imp->debugdb);
 
   // Detect if multiple jobs in this run output the same file (an error condition).
   // The run_jobs table tracks all jobs in the current run, allowing us to constrain
