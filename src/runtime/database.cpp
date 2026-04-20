@@ -1605,13 +1605,22 @@ std::tuple<std::string, std::string, long> Database::get_cached_path(const std::
                                                                      long modified) {
   std::tuple<std::string, std::string, long> out;
   const char *why = "Could not fetch a cached path";
-  begin_ro_txn();
+  begin_rw_txn();
   bind_string(why, imp->fetch_cached_path, 1, file);
   bind_integer(why, imp->fetch_cached_path, 2, modified);
   if (sqlite3_step(imp->fetch_cached_path) == SQLITE_ROW) {
-    std::get<0>(out) = rip_column(imp->fetch_cached_path, 0);
-    std::get<1>(out) = rip_column(imp->fetch_cached_path, 1);
-    std::get<2>(out) = sqlite3_column_int64(imp->fetch_cached_path, 2);
+    auto hash = rip_column(imp->fetch_cached_path, 0);
+    auto type = rip_column(imp->fetch_cached_path, 1);
+    auto mode = sqlite3_column_int64(imp->fetch_cached_path, 2);
+    out = {hash, type, mode};
+
+    // Claim file for this run.
+    bind_integer(why, imp->claim_file, 1, imp->run_id);
+    bind_string(why, imp->claim_file, 2, file);
+    bind_string(why, imp->claim_file, 3, hash);
+    bind_string(why, imp->claim_file, 4, type);
+    bind_integer(why, imp->claim_file, 5, mode);
+    single_step(why, imp->claim_file, imp->debugdb);
   }
   finish_stmt(why, imp->fetch_cached_path, imp->debugdb);
   end_txn();
