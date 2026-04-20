@@ -76,7 +76,6 @@ struct Database::detail {
   sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
   sqlite3_stmt *delete_prior;
-  sqlite3_stmt *fetch_hash;
   sqlite3_stmt *fetch_cached_path;
   sqlite3_stmt *delete_jobs;
   sqlite3_stmt *delete_dups;
@@ -133,7 +132,6 @@ struct Database::detail {
         delete_overlap(0),
         find_prior(0),
         delete_prior(0),
-        fetch_hash(0),
         fetch_cached_path(0),
         delete_jobs(0),
         delete_dups(0),
@@ -414,10 +412,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
-  const char *sql_fetch_hash =
-      "select f.hash from filetree t "
-      "join files f on t.file_id = f.file_id "
-      "where f.path=? and t.modified=? limit 1";
   const char *sql_fetch_cached_path =
       "select f.hash, f.type, f.mode from filetree t "
       "join files f on t.file_id = f.file_id "
@@ -525,7 +519,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
   PREPARE(sql_delete_prior, delete_prior);
-  PREPARE(sql_fetch_hash, fetch_hash);
   PREPARE(sql_fetch_cached_path, fetch_cached_path);
   PREPARE(sql_delete_jobs, delete_jobs);
   PREPARE(sql_delete_dups, delete_dups);
@@ -593,7 +586,6 @@ void Database::close() {
   FINALIZE(delete_overlap);
   FINALIZE(find_prior);
   FINALIZE(delete_prior);
-  FINALIZE(fetch_hash);
   FINALIZE(fetch_cached_path);
   FINALIZE(delete_jobs);
   FINALIZE(delete_dups);
@@ -1590,15 +1582,7 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
 }
 
 std::string Database::get_hash(const std::string &file, long modified) {
-  std::string out;
-  const char *why = "Could not fetch a hash";
-  begin_ro_txn();
-  bind_string(why, imp->fetch_hash, 1, file);
-  bind_integer(why, imp->fetch_hash, 2, modified);
-  if (sqlite3_step(imp->fetch_hash) == SQLITE_ROW) out = rip_column(imp->fetch_hash, 0);
-  finish_stmt(why, imp->fetch_hash, imp->debugdb);
-  end_txn();
-  return out;
+  return std::get<0>(get_cached_path(file, modified));
 }
 
 std::tuple<std::string, std::string, long> Database::get_cached_path(const std::string &file,
