@@ -1163,18 +1163,13 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 
   end_txn();  // End RO transaction
 
-#if 0
   // Don't check workspace, the referenced files as expected to be in CAS.
-#else
+#if 0
   // Confirm all outputs still exist
   // TODO: Does this make sense? If in files table should be in CAS...
   if (out.found) {
     for (const auto &file : files) {
       if (faccessat(AT_FDCWD, file.path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) {
-        std::stringstream s;
-        s << "Discarding attempt to reuse job " << std::dec << job << " in run " << std::dec
-          << imp->run_id << ", as output file '" << file.path << "' is not present!";
-        status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
         files.clear();
         out.found = false;
         return out;
