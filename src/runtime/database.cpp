@@ -876,7 +876,7 @@ void Database::clean() {
   finish_stmt(why, imp->revtop_order, imp->debugdb);
 
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
-  single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+  // single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
 
@@ -1342,14 +1342,14 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   }
 
   // Eagerly delete duplicate jobs (same command signature) from completed runs
-  bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
-  bind_integer(why, imp->delete_prior, 2, job);
-  single_step(why, imp->delete_prior, imp->debugdb);
+  // bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
+  // bind_integer(why, imp->delete_prior, 2, job);
+  // single_step(why, imp->delete_prior, imp->debugdb);
 
-  // Eagerly delete jobs with overlapping outputs from completed runs
-  bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
-  bind_integer(why, imp->delete_overlap, 2, job);
-  single_step(why, imp->delete_overlap, imp->debugdb);
+  // // Eagerly delete jobs with overlapping outputs from completed runs
+  // bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
+  // bind_integer(why, imp->delete_overlap, 2, job);
+  // single_step(why, imp->delete_overlap, imp->debugdb);
 
   // Detect if multiple jobs in this run output the same file (an error condition).
   // The run_jobs table tracks all jobs in the current run, allowing us to constrain
