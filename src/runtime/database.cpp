@@ -1512,7 +1512,6 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_string(why, imp->claim_file, 3, hash);
   bind_string(why, imp->claim_file, 4, type);
   bind_integer(why, imp->claim_file, 5, mode);
-  bind_integer(why, imp->claim_file, 6, modified);
   single_step(why, imp->claim_file, imp->debugdb);
 
   end_txn();
