@@ -332,7 +332,6 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 Pass _ -> job
                 Fail err ->
                     panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
-        Pair Nil _ -> confirm False cachedOutputs (build Unit)
         # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
         Pair Nil _ -> build Unit
 
