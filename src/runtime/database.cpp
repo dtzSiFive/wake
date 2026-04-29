@@ -1077,6 +1077,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
 
   job = match_it->job;
+  label = match_it->label;
 
   // Gather statistics
   bind_integer(why, imp->stats_job, 1, match_it->stat_id);
