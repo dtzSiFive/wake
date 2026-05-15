@@ -106,6 +106,7 @@ struct Database::detail {
   sqlite3_stmt *clear_run_files;
   sqlite3_stmt *set_starttime;
   sqlite3_stmt *get_dead_hashes;
+  sqlite3_stmt *lookup_source;
 
   long run_id;
   long gc_watermark;
@@ -165,6 +166,7 @@ struct Database::detail {
         clear_run_files(0),
         set_starttime(0),
         get_dead_hashes(0),
+        lookup_source(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -500,6 +502,13 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
   const char *sql_clear_run_files = "delete from run_files where run_id = ?";
   const char *sql_set_starttime = "update jobs set starttime=? where job_id=?";
+  // Looks up a (path, mtime) cache entry for sources: returns the file's recorded hash/type/mode.
+  // Restored from the pre-ecaaf038 fetch_cached_path; that version was removed for outputs because
+  // multi-wake can produce same-mtime collisions on racy writes, but for sources we accept that.
+  const char *sql_lookup_source =
+      "select f.hash, f.type, f.mode from filetree t"
+      " join files f on t.file_id = f.file_id"
+      " where f.path=? and t.modified=? limit 1";
   const char *sql_get_dead_hashes =
       "with disk_batch(hash) as ("
       " VALUES "
@@ -583,6 +592,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_clear_run_files, clear_run_files);
   PREPARE(sql_set_starttime, set_starttime);
   PREPARE(sql_get_dead_hashes, get_dead_hashes);
+  PREPARE(sql_lookup_source, lookup_source);
 
   return "";
 }
@@ -653,6 +663,7 @@ void Database::close() {
   FINALIZE(clear_run_files);
   FINALIZE(set_starttime);
   FINALIZE(get_dead_hashes);
+  FINALIZE(lookup_source);
 
   imp->run_lock.reset();
 
@@ -1273,6 +1284,91 @@ void Database::insert_job(const std::string &directory, const std::string &comma
         << "insert_job given invalid 'visible' string" << std::endl;
     exit(1);
   }
+}
+
+void Database::lookup_sources(const std::vector<std::pair<std::string, int64_t>> &path_mtimes,
+                              std::vector<FileReflection> &hits,
+                              std::vector<std::string> &misses) {
+  const char *why = "Could not look up sources";
+  begin_ro_txn();
+  for (const auto &pm : path_mtimes) {
+    bind_string(why, imp->lookup_source, 1, pm.first);
+    bind_integer(why, imp->lookup_source, 2, pm.second);
+    if (sqlite3_step(imp->lookup_source) == SQLITE_ROW) {
+      hits.emplace_back(std::string(pm.first), rip_column(imp->lookup_source, 1),
+                        rip_column(imp->lookup_source, 0),
+                        sqlite3_column_int64(imp->lookup_source, 2), pm.second);
+    } else {
+      misses.emplace_back(pm.first);
+    }
+    finish_stmt(why, imp->lookup_source, imp->debugdb);
+  }
+  end_txn();
+}
+
+void Database::register_sources_files(const std::vector<FileReflection> &entries) {
+  const char *why = "Could not register source files";
+  begin_rw_txn();
+  for (const auto &f : entries) {
+    bind_string(why, imp->insert_file, 1, f.hash);
+    bind_string(why, imp->insert_file, 2, f.type);
+    bind_integer(why, imp->insert_file, 3, f.mode);
+    bind_string(why, imp->insert_file, 4, f.path);
+    single_step(why, imp->insert_file, imp->debugdb);
+
+    bind_integer(why, imp->claim_file, 1, imp->run_id);
+    bind_string(why, imp->claim_file, 2, f.path);
+    bind_string(why, imp->claim_file, 3, f.hash);
+    bind_string(why, imp->claim_file, 4, f.type);
+    bind_integer(why, imp->claim_file, 5, f.mode);
+    single_step(why, imp->claim_file, imp->debugdb);
+  }
+  end_txn();
+}
+
+void Database::register_sources_filetree(const std::string &commandline,
+                                         const std::vector<FileReflection> &entries,
+                                         std::vector<FileReflection> &registered) {
+  const char *why = "Could not register source filetree";
+  begin_rw_txn();
+
+  // Create a synthetic source-aggregator job. Most fields use defaults that are sensible for a
+  // job that performs no work itself: empty environment/stdin/visible, signature 0, label
+  // "<sources>", no stack. The job is left without a stat_id/endtime — callers may tighten
+  // this later if needed.
+  bind_integer(why, imp->insert_job, 1, imp->run_id);
+  bind_string(why, imp->insert_job, 2, "<sources>");
+  bind_string(why, imp->insert_job, 3, ".");
+  bind_blob(why, imp->insert_job, 4, commandline);
+  bind_blob(why, imp->insert_job, 5, std::string());  // environment
+  bind_string(why, imp->insert_job, 6, std::string());  // stdin_file
+  bind_integer(why, imp->insert_job, 7, 0);  // signature
+  bind_blob(why, imp->insert_job, 8, std::string());  // stack
+  bind_integer(why, imp->insert_job, 9, 0);  // is_atty
+  single_step(why, imp->insert_job, imp->debugdb);
+  long job = sqlite3_last_insert_rowid(imp->db);
+
+  // Record this job as part of the current run so it pins file_ids for the run's lifetime.
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
+
+  // Link each entry's already-registered file_id (via the (path, hash, type, mode) unique
+  // index) into filetree as an OUTPUT of the synthetic job.
+  registered.reserve(registered.size() + entries.size());
+  for (const auto &f : entries) {
+    bind_integer(why, imp->insert_tree, 1, OUTPUT);
+    bind_integer(why, imp->insert_tree, 2, job);
+    bind_string(why, imp->insert_tree, 3, f.path);
+    bind_string(why, imp->insert_tree, 4, f.hash);
+    bind_string(why, imp->insert_tree, 5, f.type);
+    bind_integer(why, imp->insert_tree, 6, f.mode);
+    bind_integer(why, imp->insert_tree, 7, f.modified);
+    single_step(why, imp->insert_tree, imp->debugdb);
+    registered.emplace_back(f);
+  }
+
+  end_txn();
 }
 
 template <class F>

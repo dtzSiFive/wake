@@ -59,6 +59,9 @@ struct JobTable {
            bool quiet, bool check, bool batch);
   ~JobTable();
 
+  // Accessor for the underlying database (used by primitives that read/write the DB directly).
+  Database *get_database();
+
   // Wait for a job to complete; false -> no more active jobs
   bool wait(Runtime &runtime);
   static bool exit_now();

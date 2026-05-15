@@ -188,6 +188,26 @@ struct Database {
       const std::string &label, const std::string &stack, bool is_atty, const std::string &visible,
       long *job);  // key used for accesses below
 
+  // Bulk lookup of source files by (path, mtimeNs). For each input, attempts to find a matching
+  // (files, filetree) pair where f.path = path and t.modified = mtimeNs. Hits are appended to
+  // `hits` in input order; misses are appended to `misses` in input order.
+  void lookup_sources(const std::vector<std::pair<std::string, int64_t>> &path_mtimes,
+                      std::vector<FileReflection> &hits, std::vector<std::string> &misses);
+
+  // For each entry: insert-or-ignore into files (so its file_id exists), then insert-or-ignore
+  // into run_files (pinning it for the lifetime of this run). Does not touch jobs or filetree.
+  // Wake-side typically follows this with CAS ingestion of any newly-staged blobs, then calls
+  // register_sources_filetree to install the filetree pin via a synthetic job.
+  void register_sources_files(const std::vector<FileReflection> &entries);
+
+  // Creates a synthetic source-aggregator job with the given commandline (which should encode the
+  // input set for cross-run dedup), then links each entry's already-registered file_id via
+  // filetree(access=2, modified=mtimeNs). Returns the same entries echoed back. The synthetic
+  // job is left in an incomplete state (no stat_id/endtime); callers may tighten this later.
+  void register_sources_filetree(const std::string &commandline,
+                                 const std::vector<FileReflection> &entries,
+                                 std::vector<FileReflection> &registered);
+
   void start_job(long job, int64_t starttime);  // record wall-clock start time eagerly
   void finish_job(long job,
                   const std::string &inputs,       // null separated
