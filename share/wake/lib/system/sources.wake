@@ -54,7 +54,7 @@ def fileTimeForSource file =
 def fileTimeToLine pair =
     def Pair f t = pair
 
-    "{f}\t{str t}"
+    "{f}\0{str t}"
 
 # Path and PathInfo share the same five fields; converting between them is a tuple-to-tuple map.
 # By the time we make Paths, the metadata has been recorded in the files DB (via the registers).
@@ -102,7 +102,7 @@ def preparedToRegisterLine prepared =
     def mode = item.getStagingItemMode
     def mtimeNs = item.getStagingItemMtimeNs
 
-    "{destPath}\t{pathType}\t{hash}\t{str mode}\t{str mtimeNs}"
+    "{destPath}\0{pathType}\0{hash}\0{str mode}\0{str mtimeNs}"
 
 def hitToRegisterLine entry =
     def Pair name rest1 = entry
@@ -110,7 +110,7 @@ def hitToRegisterLine entry =
     def Pair hash rest3 = rest2
     def Pair mode mtimeNs = rest3
 
-    "{name}\t{pathType}\t{hash}\t{str mode}\t{str mtimeNs}"
+    "{name}\0{pathType}\0{hash}\0{str mode}\0{str mtimeNs}"
 
 def raw_sources files =
     def sources_lookup linesArg = prim "sources_lookup"
@@ -122,7 +122,7 @@ def raw_sources files =
     require Pass fileTimes = files | map fileTimeForSource | findFail
 
     # 2. Bulk lookup.
-    def lookupLines = catWith "\n" (map fileTimeToLine fileTimes)
+    def lookupLines = catWith "\0" (map fileTimeToLine fileTimes)
 
     require Pass (Pair hits misses) =
         sources_lookup lookupLines
@@ -151,7 +151,7 @@ def raw_sources files =
     # so insert-or-ignore is a no-op; the run_files claim is what newly pins them for this run.
     def missRegisterLines = map preparedToRegisterLine preparedMisses
     def hitRegisterLines = map hitToRegisterLine hits
-    def registerLines = catWith "\n" (hitRegisterLines ++ missRegisterLines)
+    def registerLines = catWith "\0" (hitRegisterLines ++ missRegisterLines)
 
     require Pass _ =
         sources_register_files registerLines

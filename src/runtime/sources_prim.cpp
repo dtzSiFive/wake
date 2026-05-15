@@ -17,10 +17,9 @@
 
 #include "sources_prim.h"
 
-#include <cerrno>
-#include <cstring>
-#include <sstream>
+#include <charconv>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -45,32 +44,17 @@ Value *claim_path_info(Heap &h, const FileReflection &f) {
                       Integer::claim(h, MPZ(f.modified)));
 }
 
-// Splits a buffer on '\n', returning non-empty lines.
-std::vector<std::string> split_lines(const std::string &buf) {
-  std::vector<std::string> lines;
-  std::stringstream ss(buf);
-  std::string line;
-  while (std::getline(ss, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty()) continue;
-    lines.push_back(std::move(line));
-  }
-  return lines;
-}
-
-// Splits a single line on '\t' into exactly `expected` fields. Returns false if the field count
-// doesn't match.
-bool split_tabs(const std::string &line, size_t expected, std::vector<std::string> &out) {
-  out.clear();
-  out.reserve(expected);
+// Splits a string_view on '\0', yielding non-empty views into the original buffer.
+std::vector<std::string_view> split_null(std::string_view buf) {
+  std::vector<std::string_view> parts;
   size_t start = 0;
-  for (size_t i = 0; i <= line.size(); ++i) {
-    if (i == line.size() || line[i] == '\t') {
-      out.emplace_back(line.substr(start, i - start));
-      start = i + 1;
-    }
+  size_t pos;
+  while ((pos = buf.find('\0', start)) != std::string_view::npos) {
+    if (pos > start) parts.push_back(buf.substr(start, pos - start));
+    start = pos + 1;
   }
-  return out.size() == expected;
+  if (start < buf.size()) parts.push_back(buf.substr(start));
+  return parts;
 }
 
 }  // namespace
@@ -126,21 +110,23 @@ static PRIMFN(prim_sources_lookup) {
     RETURN(claim_result(runtime.heap, false, err));
   };
 
+  auto tokens = split_null({lines_arg->c_str(), lines_arg->size()});
+  if (tokens.size() % 2 != 0) {
+    fail("sources_lookup: expected even token count, got " + std::to_string(tokens.size()));
+    return;
+  }
+
   std::vector<std::pair<std::string, int64_t>> path_mtimes;
-  for (auto &line : split_lines(std::string(lines_arg->c_str(), lines_arg->size()))) {
-    std::vector<std::string> fields;
-    if (!split_tabs(line, 2, fields)) {
-      fail("sources_lookup: malformed line (expected path\\tmtimeNs): " + line);
-      return;
-    }
+  path_mtimes.reserve(tokens.size() / 2);
+  for (size_t i = 0; i < tokens.size(); i += 2) {
     int64_t mtime;
-    try {
-      mtime = std::stoll(fields[1]);
-    } catch (const std::exception &) {
-      fail("sources_lookup: invalid mtime: " + fields[1]);
+    auto sv = tokens[i + 1];
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), mtime);
+    if (ec != std::errc{}) {
+      fail("sources_lookup: invalid mtime: " + std::string(sv));
       return;
     }
-    path_mtimes.emplace_back(std::move(fields[0]), mtime);
+    path_mtimes.emplace_back(std::string(tokens[i]), mtime);
   }
 
   std::vector<FileReflection> hits;
@@ -168,32 +154,38 @@ static PRIMFN(prim_sources_lookup) {
   RETURN(claim_result(runtime.heap, true, pair));
 }
 
-// Helper: parse a list of "path\ttype\thash\tmode\tmtimeNs" lines into FileReflections.
-// Returns true on success; on failure populates err with a description and returns false.
-static bool parse_register_lines(const std::string &buf, std::vector<FileReflection> &out,
+// Helper: parse a flat '\0'-separated "path\0type\0hash\0mode\0mtimeNs\0..." token stream into
+// FileReflections. Each record is exactly 5 tokens. Returns true on success; on failure populates
+// err and returns false.
+static bool parse_register_lines(std::string_view buf, std::vector<FileReflection> &out,
                                  std::string &err) {
-  std::stringstream ss(buf);
-  std::string line;
-  while (std::getline(ss, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty()) continue;
-
-    std::vector<std::string> fields;
-    if (!split_tabs(line, 5, fields)) {
-      err = "malformed line (expected path\\ttype\\thash\\tmode\\tmtimeNs): " + line;
-      return false;
-    }
+  auto tokens = split_null(buf);
+  if (tokens.size() % 5 != 0) {
+    err = "expected token count divisible by 5, got " + std::to_string(tokens.size());
+    return false;
+  }
+  out.reserve(tokens.size() / 5);
+  for (size_t i = 0; i < tokens.size(); i += 5) {
     long mode;
     int64_t mtime;
-    try {
-      mode = std::stol(fields[3]);
-      mtime = std::stoll(fields[4]);
-    } catch (const std::exception &) {
-      err = "invalid mode/mtime in: " + line;
-      return false;
+    {
+      auto sv = tokens[i + 3];
+      auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), mode);
+      if (ec != std::errc{}) {
+        err = "invalid mode in record " + std::to_string(i / 5) + ": " + std::string(sv);
+        return false;
+      }
     }
-    out.emplace_back(std::move(fields[0]), std::move(fields[1]), std::move(fields[2]), mode,
-                     mtime);
+    {
+      auto sv = tokens[i + 4];
+      auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), mtime);
+      if (ec != std::errc{}) {
+        err = "invalid mtime in record " + std::to_string(i / 5) + ": " + std::string(sv);
+        return false;
+      }
+    }
+    out.emplace_back(std::string(tokens[i]), std::string(tokens[i + 1]),
+                     std::string(tokens[i + 2]), mode, mtime);
   }
   return true;
 }
@@ -224,8 +216,7 @@ static PRIMFN(prim_sources_register_files) {
 
   std::vector<FileReflection> entries;
   std::string parse_err;
-  if (!parse_register_lines(std::string(lines_arg->c_str(), lines_arg->size()), entries,
-                            parse_err)) {
+  if (!parse_register_lines({lines_arg->c_str(), lines_arg->size()}, entries, parse_err)) {
     fail("sources_register_files: " + parse_err);
     return;
   }
@@ -283,8 +274,7 @@ static PRIMFN(prim_sources_register_filetree) {
 
   std::vector<FileReflection> entries;
   std::string parse_err;
-  if (!parse_register_lines(std::string(lines_arg->c_str(), lines_arg->size()), entries,
-                            parse_err)) {
+  if (!parse_register_lines({lines_arg->c_str(), lines_arg->size()}, entries, parse_err)) {
     fail("sources_register_filetree: " + parse_err);
     return;
   }
