@@ -20,7 +20,7 @@
 
 #include "types/primfn.h"
 
-class Database;
+struct Database;
 
 void prim_register_sources_prim(Database *db, PrimMap &pmap);
 

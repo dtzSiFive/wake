@@ -69,7 +69,7 @@ def parseSourcePathInfo entry =
     def Pair mode mtimeNs = rest3
 
     require Pass pathType = pathTypeFromString pathTypeString
-    else panic "Unknown path type '{pathTypeString}' for {name}"
+    else failWithError "Unknown path type '{pathTypeString}' for {name}"
 
     Pass (PathInfo name pathType hash mode mtimeNs)
 
