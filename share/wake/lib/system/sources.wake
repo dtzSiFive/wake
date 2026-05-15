@@ -39,8 +39,8 @@ export def files (dir: String) (regexp: RegExp): List String =
     p dir regexp
 
 # Bulk-resolves a list of source files to Paths. Splits into hits (already in the files+filetree
-# cache at this mtime) and misses (need staging + hashing). All resolved file_ids are pinned in
-# this run via a synthetic source-aggregator job created by sources_register.
+# cache at this mtime) and misses (stage + hash + CAS-ingest). All resolved file_ids are pinned
+# in this run via a synthetic source-aggregator job created by sources_register_filetree.
 
 def fileTimeForSource file =
     def get_modtime file = prim "get_modtime"
@@ -51,8 +51,17 @@ def fileTimeForSource file =
     else
         Pass (Pair file time)
 
-# PathInfoRaw is the nested-Pair shape returned by sources_lookup/sources_register:
-# (name, (type, (hash, (mode, mtimeNs)))).
+def fileTimeToLine pair =
+    def Pair f t = pair
+
+    "{f}\t{str t}"
+
+# Path and PathInfo share the same five fields; converting between them is a tuple-to-tuple map.
+# By the time we make Paths, the metadata has been recorded in the files DB (via the registers).
+def sourcePathInfoToPath (PathInfo n t h m mt) = Path n t h m mt
+
+# Hit entries from sources_lookup come back as nested-Pair PathInfoRaw:
+# (name, (type, (hash, (mode, mtimeNs)))). Lift to PathInfo.
 def parseSourcePathInfo entry =
     def Pair name rest1 = entry
     def Pair pathTypeString rest2 = rest1
@@ -64,85 +73,44 @@ def parseSourcePathInfo entry =
 
     Pass (PathInfo name pathType hash mode mtimeNs)
 
-# Path and PathInfo share the same five fields; the type distinction is a phantom guarantee that
-# the metadata has been recorded in the files DB. By the time we call this, both sources_lookup
-# hits and sources_register-produced entries have a corresponding files row.
-def sourcePathInfoToPath info =
-    def PathInfo n t h m mt = info
-
-    Path n t h m mt
-
-# Each rawEntry from stage_outputs: (destPath, type, stagingPathOrTarget, mode, mtimeSec,
-# mtimeNsec). Returns (destPath, type, stagingPath, mode, mtimeNs).
-def parseStagedSourceEntry entry =
+# Convert a stage_outputs raw entry (destPath, type, stagingPathOrTarget, mode, mtimeSec,
+# mtimeNsec) into a wake-side StagingItem so we can reuse prepareStagingOutputs (which knows
+# how to hash files via wake-hash, symlinks via target string, dirs via dirHash).
+def stagedRawToStagingItem entry =
     def Pair destPath rest1 = entry
     def Pair itemType rest2 = rest1
-    def Pair stagingPath rest3 = rest2
+    def Pair stagingPathOrTarget rest3 = rest2
     def Pair mode rest4 = rest3
     def Pair mtimeSec mtimeNsec = rest4
-    def mtimeNs = mtimeSec * 1000000000 + mtimeNsec
 
-    Pair destPath (Pair itemType (Pair stagingPath (Pair mode mtimeNs)))
+    match itemType
+        "file" ->
+            Pass (StagingFile (StagingFileOutput destPath stagingPathOrTarget mode mtimeSec mtimeNsec))
+        "symlink" ->
+            Pass (StagingSymlink (StagingSymlinkOutput destPath stagingPathOrTarget mtimeSec mtimeNsec))
+        "directory" ->
+            Pass (StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec))
+        t -> failWithError "Unknown staging entry type from stage_outputs: {t}"
 
-def stagingPathOfStagedSourceEntry entry =
-    def Pair _ rest1 = entry
-    def Pair _ rest2 = rest1
-    def Pair sp _ = rest2
+# Project a PreparedStagingItem onto the (path, type, hash, mode, mtimeNs) shape sources_register
+# expects on the wire.
+def preparedToRegisterLine prepared =
+    def item = prepared.getPreparedStagingItemItem
+    def hash = prepared.getPreparedStagingItemHash
+    def destPath = item.getStagingItemDestPath
+    def pathType = pathTypeToString item.getStagingItemPathType
+    def mode = item.getStagingItemMode
+    def mtimeNs = item.getStagingItemMtimeNs
 
-    sp
+    "{destPath}\t{pathType}\t{hash}\t{str mode}\t{str mtimeNs}"
 
-def registerEntryToLine entry =
+def hitToRegisterLine entry =
     def Pair name rest1 = entry
     def Pair pathType rest2 = rest1
     def Pair hash rest3 = rest2
     def Pair mode mtimeNs = rest3
 
     "{name}\t{pathType}\t{hash}\t{str mode}\t{str mtimeNs}"
-
-def fileTimeToLine pair =
-    def Pair f t = pair
-
-    "{f}\t{str t}"
-
-# For misses, after staging the original entries get paired up with their newly-computed hash.
-# Tuple shape: (destPath, type, stagingPath, hash, mode, mtimeNs).
-def stagedMissShape destPath itemType stagingPath hash mode mtimeNs =
-    Pair destPath (Pair itemType (Pair stagingPath (Pair hash (Pair mode mtimeNs))))
-
-def buildStagedMiss pair =
-    def Pair entry hash = pair
-    def Pair destPath rest1 = entry
-    def Pair itemType rest2 = rest1
-    def Pair stagingPath rest3 = rest2
-    def Pair mode mtimeNs = rest3
-
-    stagedMissShape destPath itemType stagingPath hash mode mtimeNs
-
-# Project a staged-miss tuple back into the (path, type, hash, mode, mtimeNs) shape that
-# sources_register_files / sources_register_filetree expects on the wire.
-def stagedMissToRegisterEntry m =
-    def Pair destPath rest1 = m
-    def Pair itemType rest2 = rest1
-    def Pair _stagingPath rest3 = rest2
-    def Pair hash rest4 = rest3
-    def Pair mode mtimeNs = rest4
-
-    Pair destPath (Pair itemType (Pair hash (Pair mode mtimeNs)))
-
-# Drive cas_ingest_staged_item per miss using the staging path produced by stage_outputs.
-def ingestStagedMiss m =
-    def primCasIngestStagedItem destPath itemType stagingPathOrTarget hash =
-        def raw destPath itemType stagingPathOrTarget hash = prim "cas_ingest_staged_item"
-
-        raw destPath itemType stagingPathOrTarget hash
-        | rmapError makeError
-
-    def Pair destPath rest1 = m
-    def Pair itemType rest2 = rest1
-    def Pair stagingPath rest3 = rest2
-    def Pair hash _ = rest3
-
-    primCasIngestStagedItem destPath itemType stagingPath hash
 
 def raw_sources files =
     def sources_lookup linesArg = prim "sources_lookup"
@@ -160,8 +128,8 @@ def raw_sources files =
         sources_lookup lookupLines
         | rmapFail (\msg failWithError "sources_lookup failed: {msg}")
 
-    # 3. For misses: stage to capture mode/type/mtime, hash via wake-hash, keep stagingPath
-    # alongside the hash so step 5 can CAS-ingest from it.
+    # 3. For misses: stage, then run prepareStagingOutputs to compute correct hashes per type
+    # (files via wake-hash on staging paths, symlinks via target string, directories via dirHash).
     def stageAndHashMisses Unit =
         def stagingBase = ".build/staging/sources.{str wakePid}"
 
@@ -170,30 +138,28 @@ def raw_sources files =
             | rmapFail (\msg failWithError "sources staging failed: {msg}")
 
         def Pair _stagingRoot rawEntries = stageResult
-        def parsed = map parseStagedSourceEntry rawEntries
 
-        require Pass hashes = computeHashes "sources" (map stagingPathOfStagedSourceEntry parsed)
+        require Pass stagingItems = rawEntries | map stagedRawToStagingItem | findFail
 
-        Pass (map buildStagedMiss (zip parsed hashes))
+        prepareStagingOutputs "sources" stagingItems
 
-    require Pass stagedMisses = match misses
+    require Pass preparedMisses = match misses
         Nil -> Pass Nil
         _ -> stageAndHashMisses Unit
 
     # 4. Insert files + run_files for ALL entries (hits + misses). Hits' file row already exists
     # so insert-or-ignore is a no-op; the run_files claim is what newly pins them for this run.
-    def missRegisterEntries = map stagedMissToRegisterEntry stagedMisses
-    def allEntries = hits ++ missRegisterEntries
-    def registerLines = catWith "\n" (map registerEntryToLine allEntries)
+    def missRegisterLines = map preparedToRegisterLine preparedMisses
+    def hitRegisterLines = map hitToRegisterLine hits
+    def registerLines = catWith "\n" (hitRegisterLines ++ missRegisterLines)
 
     require Pass _ =
         sources_register_files registerLines
         | rmapFail (\msg failWithError "sources_register_files failed: {msg}")
 
-    # 5. CAS-ingest each miss's blob from its staging path (between files+run_files and filetree
-    # registration, matching the standard order). Hits skip this — their blobs are already in
-    # CAS from the run that originally registered them.
-    require Pass _ = stagedMisses | map ingestStagedMiss | findFail
+    # 5. CAS-ingest each miss (handles all three types correctly via ingestPreparedStagingItemIntoCas).
+    # Hits skip this — their blobs are already in CAS from the run that originally registered them.
+    require Pass _ = preparedMisses | map ingestPreparedStagingItemIntoCas | findFail
 
     # 6. Create the synthetic source-aggregator job and link filetree(access=2) entries for all
     # entries (hits + misses), pinning the file_ids cross-run via the job's lifetime.

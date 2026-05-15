@@ -1332,10 +1332,9 @@ void Database::register_sources_filetree(const std::string &commandline,
   const char *why = "Could not register source filetree";
   begin_rw_txn();
 
-  // Create a synthetic source-aggregator job. Most fields use defaults that are sensible for a
-  // job that performs no work itself: empty environment/stdin/visible, signature 0, label
-  // "<sources>", no stack. The job is left without a stat_id/endtime — callers may tighten
-  // this later if needed.
+  // Create a synthetic source-aggregator job. Most fields use defaults sensible for a job that
+  // performs no work itself: empty environment/stdin/visible, signature 0, label "<sources>",
+  // no stack.
   bind_integer(why, imp->insert_job, 1, imp->run_id);
   bind_string(why, imp->insert_job, 2, "<sources>");
   bind_string(why, imp->insert_job, 3, ".");
@@ -1352,6 +1351,27 @@ void Database::register_sources_filetree(const std::string &commandline,
   bind_integer(why, imp->insert_run_job, 1, imp->run_id);
   bind_integer(why, imp->insert_run_job, 2, job);
   single_step(why, imp->insert_run_job, imp->debugdb);
+
+  // Mark the job complete: starttime + a no-op stat record + link_stats sets stat_id/endtime so
+  // future runs can reuse this job via job_cache (which filters on stat_id is not null).
+  int64_t now = gettime_ns();
+  bind_integer(why, imp->set_starttime, 1, now);
+  bind_integer(why, imp->set_starttime, 2, job);
+  single_step(why, imp->set_starttime, imp->debugdb);
+
+  bind_integer(why, imp->add_stats, 1, 0);  // hashcode (unused for synthetic)
+  bind_integer(why, imp->add_stats, 2, 0);  // status: success
+  bind_double(why, imp->add_stats, 3, 0.0);  // runtime
+  bind_double(why, imp->add_stats, 4, 0.0);  // cputime
+  bind_integer(why, imp->add_stats, 5, 0);  // membytes
+  bind_integer(why, imp->add_stats, 6, 0);  // ibytes
+  bind_integer(why, imp->add_stats, 7, 0);  // obytes
+  single_step(why, imp->add_stats, imp->debugdb);
+  bind_integer(why, imp->link_stats, 1, sqlite3_last_insert_rowid(imp->db));
+  bind_integer(why, imp->link_stats, 2, now);  // endtime
+  bind_integer(why, imp->link_stats, 3, 0);    // keep
+  bind_integer(why, imp->link_stats, 4, job);
+  single_step(why, imp->link_stats, imp->debugdb);
 
   // Link each entry's already-registered file_id (via the (path, hash, type, mode) unique
   // index) into filetree as an OUTPUT of the synthetic job.
